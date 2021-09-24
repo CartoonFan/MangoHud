@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <spdlog/spdlog.h>
 #include "real_dlsym.h"
 #include "loaders/loader_glx.h"
 #include "loaders/loader_x11.h"
@@ -16,18 +17,17 @@
 #include <chrono>
 #include <iomanip>
 
+#include <glad/glad.h>
 #include "imgui_hud.h"
 
 using namespace MangoHud::GL;
-
-#define EXPORT_C_(type) extern "C" __attribute__((__visibility__("default"))) type
 
 EXPORT_C_(void *) glXGetProcAddress(const unsigned char* procName);
 EXPORT_C_(void *) glXGetProcAddressARB(const unsigned char* procName);
 
 #ifndef GLX_WIDTH
 #define GLX_WIDTH   0x801D
-#define GLX_HEIGTH  0x801E
+#define GLX_HEIGHT  0x801E
 #endif
 
 static glx_loader glx;
@@ -48,7 +48,7 @@ void* get_glx_proc_address(const char* name) {
         func = get_proc_address( name );
 
     if (!func) {
-        std::cerr << "MANGOHUD: Failed to get function '" << name << "'" << std::endl;
+        SPDLOG_ERROR("Failed to get function '{}'", name);
     }
 
     return func;
@@ -60,9 +60,7 @@ EXPORT_C_(void *) glXCreateContext(void *dpy, void *vis, void *shareList, int di
     void *ctx = glx.CreateContext(dpy, vis, shareList, direct);
     if (ctx)
         refcnt++;
-#ifndef NDEBUG
-    std::cerr << __func__ << ":" << ctx << std::endl;
-#endif
+    SPDLOG_DEBUG("{}: {}", __func__,  ctx);
     return ctx;
 }
 
@@ -72,9 +70,7 @@ EXPORT_C_(void *) glXCreateContextAttribs(void *dpy, void *config,void *share_co
     void *ctx = glx.CreateContextAttribs(dpy, config, share_context, direct, attrib_list);
     if (ctx)
         refcnt++;
-#ifndef NDEBUG
-    std::cerr << __func__ << ":" << ctx << std::endl;
-#endif
+    SPDLOG_DEBUG("{}: {}", __func__,  ctx);
     return ctx;
 }
 
@@ -84,9 +80,7 @@ EXPORT_C_(void *) glXCreateContextAttribsARB(void *dpy, void *config,void *share
     void *ctx = glx.CreateContextAttribsARB(dpy, config, share_context, direct, attrib_list);
     if (ctx)
         refcnt++;
-#ifndef NDEBUG
-    std::cerr << __func__ << ":" << ctx << std::endl;
-#endif
+    SPDLOG_DEBUG("{}: {}", __func__,  ctx);
     return ctx;
 }
 
@@ -97,25 +91,18 @@ EXPORT_C_(void) glXDestroyContext(void *dpy, void *ctx)
     refcnt--;
     if (refcnt <= 0)
         imgui_shutdown();
-#ifndef NDEBUG
-    std::cerr << __func__ << ":" << ctx << std::endl;
-#endif
+    SPDLOG_DEBUG("{}: {}", __func__,  ctx);
 }
 
 EXPORT_C_(int) glXMakeCurrent(void* dpy, void* drawable, void* ctx) {
     glx.Load();
-#ifndef NDEBUG
-    std::cerr << __func__ << ": " << drawable << ", " << ctx << std::endl;
-#endif
-
+    SPDLOG_DEBUG("{}: {}, {}", __func__, drawable, ctx);
     int ret = glx.MakeCurrent(dpy, drawable, ctx);
 
     if (!is_blacklisted()) {
         if (ret) {
             imgui_set_context(ctx);
-#ifndef NDEBUG
-            std::cerr << "MANGOHUD: GL ref count: " << refcnt << "\n";
-#endif
+            SPDLOG_DEBUG("GL ref count: {}", refcnt);
         }
 
         // Afaik -1 only works with EXT version if it has GLX_EXT_swap_control_tear, maybe EGL_MESA_swap_control_tear someday
@@ -136,18 +123,31 @@ EXPORT_C_(int) glXMakeCurrent(void* dpy, void* drawable, void* ctx) {
 
 static void do_imgui_swap(void *dpy, void *drawable)
 {
+    GLint vp[4];
     if (!is_blacklisted()) {
         imgui_create(glx.GetCurrentContext());
 
         unsigned int width = -1, height = -1;
 
-        glx.QueryDrawable(dpy, drawable, GLX_WIDTH, &width);
-        glx.QueryDrawable(dpy, drawable, GLX_HEIGTH, &height);
+        switch (params.gl_size_query)
+        {
+            case GL_SIZE_VIEWPORT:
+                glGetIntegerv (GL_VIEWPORT, vp);
+                width = vp[2];
+                height = vp[3];
+                break;
+            case GL_SIZE_SCISSORBOX:
+                glGetIntegerv (GL_SCISSOR_BOX, vp);
+                width = vp[2];
+                height = vp[3];
+                break;
+            default:
+                glx.QueryDrawable(dpy, drawable, GLX_WIDTH, &width);
+                glx.QueryDrawable(dpy, drawable, GLX_HEIGHT, &height);
+                break;
+        }
 
-        /*GLint vp[4]; glGetIntegerv (GL_VIEWPORT, vp);
-        width = vp[2];
-        height = vp[3];*/
-
+        SPDLOG_TRACE("swap buffers: {}x{}", width, height);
         imgui_render(width, height);
     }
 }
@@ -185,9 +185,7 @@ EXPORT_C_(int64_t) glXSwapBuffersMscOML(void* dpy, void* drawable, int64_t targe
 }
 
 EXPORT_C_(void) glXSwapIntervalEXT(void *dpy, void *draw, int interval) {
-#ifndef NDEBUG
-    std::cerr << __func__ << ": " << interval << std::endl;
-#endif
+    SPDLOG_DEBUG("{}: {}", __func__, interval);
     glx.Load();
     if (!glx.SwapIntervalEXT)
         return;
@@ -199,9 +197,7 @@ EXPORT_C_(void) glXSwapIntervalEXT(void *dpy, void *draw, int interval) {
 }
 
 EXPORT_C_(int) glXSwapIntervalSGI(int interval) {
-#ifndef NDEBUG
-    std::cerr << __func__ << ": " << interval << std::endl;
-#endif
+    SPDLOG_DEBUG("{}: {}", __func__, interval);
     glx.Load();
     if (!glx.SwapIntervalSGI)
         return -1;
@@ -213,9 +209,7 @@ EXPORT_C_(int) glXSwapIntervalSGI(int interval) {
 }
 
 EXPORT_C_(int) glXSwapIntervalMESA(unsigned int interval) {
-#ifndef NDEBUG
-    std::cerr << __func__ << ": " << interval << std::endl;
-#endif
+    SPDLOG_DEBUG("{}: {}", __func__, interval);
     glx.Load();
     if (!glx.SwapIntervalMESA)
         return -1;
@@ -245,9 +239,7 @@ EXPORT_C_(int) glXGetSwapIntervalMESA() {
         }
     }
 
-#ifndef NDEBUG
-    std::cerr << __func__ << ": " << interval << std::endl;
-#endif
+    SPDLOG_DEBUG("{}: {}", __func__, interval);
     return interval;
 }
 
@@ -289,10 +281,10 @@ EXPORT_C_(void *) mangohud_find_glx_ptr(const char *name)
 }
 
 EXPORT_C_(void *) glXGetProcAddress(const unsigned char* procName) {
-    //std::cerr << __func__ << ":" << procName << std::endl;
-
     void *real_func = get_glx_proc_address((const char*)procName);
     void *func = mangohud_find_glx_ptr( (const char*)procName );
+    SPDLOG_TRACE("{}: '{}', real: {}, fun: {}", __func__, procName, real_func, func);
+
     if (func && real_func)
         return func;
 
@@ -300,10 +292,9 @@ EXPORT_C_(void *) glXGetProcAddress(const unsigned char* procName) {
 }
 
 EXPORT_C_(void *) glXGetProcAddressARB(const unsigned char* procName) {
-    //std::cerr << __func__ << ":" << procName << std::endl;
-
     void *real_func = get_glx_proc_address((const char*)procName);
     void *func = mangohud_find_glx_ptr( (const char*)procName );
+    SPDLOG_TRACE("{}: '{}', real: {}, fun: {}", __func__, procName, real_func, func);
     if (func && real_func)
         return func;
 

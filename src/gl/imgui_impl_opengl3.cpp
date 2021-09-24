@@ -64,24 +64,21 @@
 //  ES 3.0    300       "#version 300 es"   = WebGL 2.0
 //----------------------------------------
 
+#include <spdlog/spdlog.h>
 #include <imgui.h>
 #include "imgui_impl_opengl3.h"
 #include <stdio.h>
 #include <stdint.h>     // intptr_t
 #include <sstream>
 
+#include <spdlog/spdlog.h>
 #include <glad/glad.h>
 
 #include "overlay.h"
 
-namespace MangoHud {
+namespace MangoHud { namespace GL {
 
-// Desktop GL 3.2+ has glDrawElementsBaseVertex() which GL ES and WebGL don't have.
-#if defined(IMGUI_IMPL_OPENGL_ES2) || defined(IMGUI_IMPL_OPENGL_ES3) || !defined(GL_VERSION_3_2)
-#define IMGUI_IMPL_OPENGL_MAY_HAVE_VTX_OFFSET   0
-#else
-#define IMGUI_IMPL_OPENGL_MAY_HAVE_VTX_OFFSET   1
-#endif
+extern overlay_params params;
 
 // OpenGL Data
 static GLuint       g_GlVersion = 0;                // Extracted at runtime using GL_MAJOR_VERSION, GL_MINOR_VERSION queries.
@@ -143,13 +140,13 @@ static bool CheckShader(GLuint handle, const char* desc)
     glGetShaderiv(handle, GL_COMPILE_STATUS, &status);
     glGetShaderiv(handle, GL_INFO_LOG_LENGTH, &log_length);
     if ((GLboolean)status == GL_FALSE)
-        fprintf(stderr, "ERROR: ImGui_ImplOpenGL3_CreateDeviceObjects: failed to compile %s!\n", desc);
+        SPDLOG_ERROR("ImGui_ImplOpenGL3_CreateDeviceObjects: failed to compile {}!", desc);
     if (log_length > 1)
     {
         ImVector<char> buf;
         buf.resize((int)(log_length + 1));
         glGetShaderInfoLog(handle, log_length, NULL, (GLchar*)buf.begin());
-        fprintf(stderr, "%s\n", buf.begin());
+        SPDLOG_ERROR("{}", buf.begin());
     }
     return (GLboolean)status == GL_TRUE;
 }
@@ -161,13 +158,13 @@ static bool CheckProgram(GLuint handle, const char* desc)
     glGetProgramiv(handle, GL_LINK_STATUS, &status);
     glGetProgramiv(handle, GL_INFO_LOG_LENGTH, &log_length);
     if ((GLboolean)status == GL_FALSE)
-        fprintf(stderr, "ERROR: ImGui_ImplOpenGL3_CreateDeviceObjects: failed to link %s! (with GLSL '%s')\n", desc, g_GlslVersionString);
+        SPDLOG_ERROR("ImGui_ImplOpenGL3_CreateDeviceObjects: failed to link {}! (with GLSL '{}')", desc, g_GlslVersionString);
     if (log_length > 1)
     {
         ImVector<char> buf;
         buf.resize((int)(log_length + 1));
         glGetProgramInfoLog(handle, log_length, NULL, (GLchar*)buf.begin());
-        fprintf(stderr, "%s\n", buf.begin());
+        SPDLOG_ERROR("{}", buf.begin());
     }
     return (GLboolean)status == GL_TRUE;
 }
@@ -289,7 +286,7 @@ static bool    ImGui_ImplOpenGL3_CreateDeviceObjects()
         "}\n";
 
 #ifndef NDEBUG
-    printf("glsl_version: %d\n", glsl_version);
+    fprintf(stderr, "glsl_version: %d\n", glsl_version);
 #endif
     // Select shaders matching our GLSL versions
     const GLchar* vertex_shader = NULL;
@@ -368,7 +365,7 @@ static bool    ImGui_ImplOpenGL3_CreateDeviceObjects()
 static void    ImGui_ImplOpenGL3_DestroyDeviceObjects()
 {
 #ifndef NDEBUG
-    printf("%s\n", __func__);
+    fprintf(stderr, "%s\n", __func__);
 #endif
     if (g_VboHandle)        { glDeleteBuffers(1, &g_VboHandle); g_VboHandle = 0; }
     if (g_ElementsHandle)   { glDeleteBuffers(1, &g_ElementsHandle); g_ElementsHandle = 0; }
@@ -398,8 +395,8 @@ void GetOpenGLVersion(int& major, int& minor, bool& isGLES)
     if (!version)
         return;
 
-    //if (glGetError() == 0x500) {
-
+    //if (glGetError() == 0x500)
+    {
         for (int i = 0;  prefixes[i];  i++) {
             const size_t length = strlen(prefixes[i]);
             if (strncmp(version, prefixes[i], length) == 0) {
@@ -410,7 +407,7 @@ void GetOpenGLVersion(int& major, int& minor, bool& isGLES)
         }
 
         sscanf(version, "%d.%d", &major, &minor);
-    //}
+    }
 }
 
 bool    ImGui_ImplOpenGL3_Init(const char* glsl_version)
@@ -418,7 +415,7 @@ bool    ImGui_ImplOpenGL3_Init(const char* glsl_version)
     GLint major = 0, minor = 0;
     GetOpenGLVersion(major, minor, g_IsGLES);
 
-    printf("Version: %d.%d %s\n", major, minor, g_IsGLES ? "ES" : "");
+    SPDLOG_INFO("GL version: {}.{} {}", major, minor, g_IsGLES ? "ES" : "");
 
     if (!g_IsGLES) {
         // Not GL ES
@@ -452,7 +449,7 @@ bool    ImGui_ImplOpenGL3_Init(const char* glsl_version)
     ImGuiIO& io = ImGui::GetIO();
     io.BackendRendererName = "imgui_impl_opengl3";
     //#if IMGUI_IMPL_OPENGL_MAY_HAVE_VTX_OFFSET
-    if ((!g_IsGLES && g_GlVersion >= 320) || (g_IsGLES && g_GlVersion >= 320))
+    if (g_GlVersion >= 320) // GL/GLES 3.2+
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;  // We can honor the ImDrawCmd::VtxOffset field, allowing for large meshes.
 
     // Store GLSL version string so we can refer to it later in case we recreate shaders.
@@ -483,16 +480,12 @@ void    ImGui_ImplOpenGL3_NewFrame()
     if (!g_ShaderHandle)
         ImGui_ImplOpenGL3_CreateDeviceObjects();
     else if (!glIsProgram(g_ShaderHandle)) { // TODO Got created in a now dead context?
-#ifndef NDEBUG
-        fprintf(stderr, "MANGOHUD: recreating lost objects\n");
-#endif
+        SPDLOG_DEBUG("Recreating lost objects");
         ImGui_ImplOpenGL3_CreateDeviceObjects();
     }
 
     if (!glIsTexture(g_FontTexture)) {
-#ifndef NDEBUG
-        fprintf(stderr, "MANGOHUD: GL Texture lost? Regenerating.\n");
-#endif
+        SPDLOG_DEBUG("GL Texture lost? Regenerating.");
         g_FontTexture = 0;
         ImGui_ImplOpenGL3_CreateFontsTexture();
     }
@@ -501,6 +494,8 @@ void    ImGui_ImplOpenGL3_NewFrame()
 static void ImGui_ImplOpenGL3_SetupRenderState(ImDrawData* draw_data, int fb_width, int fb_height, GLuint vertex_array_object)
 {
     // Setup render state: alpha-blending enabled, no face culling, no depth testing, scissor enabled, polygon fill
+    if (params.gl_bind_framebuffer >= 0 && (g_IsGLES || g_GlVersion >= 300))
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, params.gl_bind_framebuffer);
     glEnable(GL_BLEND);
     glBlendEquation(GL_FUNC_ADD);
     glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
@@ -535,7 +530,7 @@ static void ImGui_ImplOpenGL3_SetupRenderState(ImDrawData* draw_data, int fb_wid
     float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
     float T = draw_data->DisplayPos.y;
     float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
-    if (!clip_origin_lower_left) { float tmp = T; T = B; B = tmp; } // Swap top and bottom if origin is upper left
+    if (!params.gl_dont_flip && !clip_origin_lower_left) { float tmp = T; T = B; B = tmp; } // Swap top and bottom if origin is upper left
     const float ortho_projection[4][4] =
     {
         { 2.0f/(R-L),   0.0f,         0.0f,   0.0f },
@@ -578,6 +573,9 @@ void    ImGui_ImplOpenGL3_RenderDrawData(ImDrawData* draw_data)
         return;
 
     // Backup GL state
+    GLint last_fb = -1;
+    if (params.gl_bind_framebuffer >= 0 && (g_IsGLES || g_GlVersion >= 300))
+        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &last_fb);
     GLenum last_active_texture; glGetIntegerv(GL_ACTIVE_TEXTURE, (GLint*)&last_active_texture);
     glActiveTexture(GL_TEXTURE0);
     GLint last_program; glGetIntegerv(GL_CURRENT_PROGRAM, &last_program);
@@ -662,7 +660,10 @@ void    ImGui_ImplOpenGL3_RenderDrawData(ImDrawData* draw_data)
                 if (clip_rect.x < fb_width && clip_rect.y < fb_height && clip_rect.z >= 0.0f && clip_rect.w >= 0.0f)
                 {
                     // Apply scissor/clipping rectangle
-                    glScissor((int)clip_rect.x, (int)(fb_height - clip_rect.w), (int)(clip_rect.z - clip_rect.x), (int)(clip_rect.w - clip_rect.y));
+                    if (!params.gl_dont_flip)
+                        glScissor((int)clip_rect.x, (int)(fb_height - clip_rect.w), (int)(clip_rect.z - clip_rect.x), (int)(clip_rect.w - clip_rect.y));
+                    else
+                        glScissor((int)clip_rect.x, (int)clip_rect.y, (int)clip_rect.z, (int)clip_rect.w);
 
                     // Bind texture, Draw
                     glBindTexture(GL_TEXTURE_2D, (GLuint)(intptr_t)pcmd->TextureId);
@@ -710,6 +711,8 @@ void    ImGui_ImplOpenGL3_RenderDrawData(ImDrawData* draw_data)
 
     if (last_srgb_enabled)
         glEnable(GL_FRAMEBUFFER_SRGB);
+    if (last_fb >= 0)
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, last_fb);
 }
 
-}
+}} // namespace
