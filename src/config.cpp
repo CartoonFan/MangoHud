@@ -5,12 +5,14 @@
 #include <thread>
 #include <unordered_map>
 #include <string>
+#include <spdlog/spdlog.h>
 #include "config.h"
 #include "file_utils.h"
 #include "string_utils.h"
 #include "hud_elements.h"
+#include "blacklist.h"
 
-static void parseConfigLine(std::string line, std::unordered_map<std::string, std::string>& options) {
+void parseConfigLine(std::string line, std::unordered_map<std::string, std::string>& options) {
     std::string param, value;
 
     if (line.find("#") != std::string::npos)
@@ -74,10 +76,12 @@ static void enumerate_config_files(std::vector<std::string>& paths) {
     }
 
     paths.push_back(config_dir + mangohud_dir + "MangoHud.conf");
+    paths.push_back("/etc/MangoHud.conf");
 
-#ifdef _WIN32
-    paths.push_back("C:\\mangohud\\MangoHud.conf");
-#endif
+    if (is_blacklisted()) {
+        // Don't bother looking for conf file
+        return;
+    }
 
     if (!program_name.empty()) {
         paths.push_back(config_dir + mangohud_dir + program_name + ".conf");
@@ -95,8 +99,6 @@ static void enumerate_config_files(std::vector<std::string>& paths) {
 }
 
 void parseConfigFile(overlay_params& params) {
-    HUDElements.options.clear();
-    params.options.clear();
     std::vector<std::string> paths;
     const char *cfg_file = getenv("MANGOHUD_CONFIGFILE");
 
@@ -104,23 +106,24 @@ void parseConfigFile(overlay_params& params) {
         paths.push_back(cfg_file);
     else
         enumerate_config_files(paths);
-
+#ifdef _WIN32
+    paths.push_back("C:\\mangohud\\MangoHud.conf");
+#endif
     std::string line;
     for (auto p = paths.rbegin(); p != paths.rend(); p++) {
         std::ifstream stream(*p);
         if (!stream.good()) {
             // printing just so user has an idea of possible configs
-            std::cerr << "skipping config: " << *p << " [ not found ]" << std::endl;
+            SPDLOG_DEBUG("skipping config: '{}' [ not found ]", *p);
             continue;
         }
 
         stream.imbue(std::locale::classic());
-        std::cerr << "parsing config: " << *p;
+        SPDLOG_DEBUG("parsing config: '{}'", *p);
         while (std::getline(stream, line))
         {
             parseConfigLine(line, params.options);
         }
-        std::cerr << " [ ok ]" << std::endl;
         params.config_file_path = *p;
         return;
     }

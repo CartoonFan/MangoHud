@@ -1,5 +1,6 @@
 #include "loader_x11.h"
 #include <iostream>
+#include <spdlog/spdlog.h>
 
 libx11_loader::libx11_loader() : loaded_(false) {
 }
@@ -15,7 +16,7 @@ bool libx11_loader::Load(const std::string& library_name) {
 
   library_ = dlopen(library_name.c_str(), RTLD_LAZY);
   if (!library_) {
-    std::cerr << "MANGOHUD: Failed to open " << "" MANGOHUD_ARCH << " " << library_name << ": " << dlerror() << std::endl;
+    SPDLOG_ERROR("Failed to open " MANGOHUD_ARCH " {}: {}", library_name, dlerror());
     return false;
   }
 
@@ -34,6 +35,14 @@ bool libx11_loader::Load(const std::string& library_name) {
   if (!XCloseDisplay) {
     CleanUp(true);
     return false;
+  }
+
+  XDefaultScreen =
+      reinterpret_cast<decltype(this->XDefaultScreen)>(
+          dlsym(library_, "XDefaultScreen"));
+  if (!XDefaultScreen) {
+      CleanUp(true);
+      return false;
   }
 
   XQueryKeymap =
@@ -68,6 +77,14 @@ bool libx11_loader::Load(const std::string& library_name) {
     return false;
   }
 
+  XQueryExtension =
+      reinterpret_cast<decltype(this->XQueryExtension)>(
+          dlsym(library_, "XQueryExtension"));
+  if (!XQueryExtension) {
+    CleanUp(true);
+    return false;
+  }
+
   loaded_ = true;
   return true;
 }
@@ -85,7 +102,14 @@ void libx11_loader::CleanUp(bool unload) {
   XKeysymToKeycode = NULL;
   XStringToKeysym = NULL;
   XGetGeometry = NULL;
+  XQueryExtension = NULL;
 
 }
 
-std::shared_ptr<libx11_loader> g_x11(new libx11_loader("libX11.so.6"));
+static std::shared_ptr<libx11_loader> loader;
+std::shared_ptr<libx11_loader> get_libx11()
+{
+    if (!loader)
+        loader = std::make_shared<libx11_loader>("libX11.so.6");
+    return loader;
+}

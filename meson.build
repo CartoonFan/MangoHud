@@ -1,12 +1,14 @@
 project('MangoHud',
   ['c', 'cpp'],
-  version : 'v0.6.2',
+  version : 'v0.8.0',
   license : 'MIT',
-  default_options : ['buildtype=release', 'c_std=c99', 'cpp_std=c++14']
+  meson_version: '>=0.60.0',
+  default_options : ['buildtype=release', 'c_std=c99', 'cpp_std=c++14', 'warning_level=2']
 )
 
 cc = meson.get_compiler('c')
 cpp = meson.get_compiler('cpp')
+
 prog_python = import('python').find_installation('python3', modules: ['mako'])
 null_dep = dependency('', required : false)
 
@@ -15,20 +17,23 @@ mangohud_version = vcs_tag(
   input:  'version.h.in',
   output: 'version.h')
 
+mangohud_version_dep = declare_dependency(sources : mangohud_version)
+
 pre_args = [
   '-D__STDC_CONSTANT_MACROS',
   '-D__STDC_FORMAT_MACROS',
   '-D__STDC_LIMIT_MACROS',
   '-DPACKAGE_VERSION="@0@"'.format(meson.project_version()),
+  '-DSPDLOG_COMPILED_LIB'
 ]
 
-# Define DEBUG for debug builds only (debugoptimized is not included on this one)
+# Always set max spdlog level, handle this using MANGOHUD_LOG_LEVEL instead.
 if get_option('buildtype') == 'debug'
   pre_args += '-DDEBUG'
+  pre_args += '-DSPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE'
 else
-  pre_args += '-DNDEBUG'
+  pre_args += '-DSPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG'
 endif
-
 # TODO: this is very incomplete
 is_unixy = false
 if ['linux', 'cygwin', 'gnu'].contains(host_machine.system())
@@ -84,6 +89,7 @@ if is_unixy
   dep_wayland_client = dependency('wayland-client',
       required: get_option('with_wayland'), version : '>=1.11')
   dbus_dep = dependency('dbus-1', required: get_option('with_dbus')).partial_dependency(compile_args : true, includes : true)
+  dep_xkb = dependency('xkbcommon', required: get_option('with_x11').enabled() or get_option('with_wayland').enabled())
 else
   dep_x11 = null_dep
   dep_wayland_client = null_dep
@@ -97,6 +103,7 @@ endif
 if dep_wayland_client.found()
   vulkan_wsi_args += ['-DVK_USE_PLATFORM_WAYLAND_KHR']
   vulkan_wsi_deps += dep_wayland_client
+  vulkan_wsi_deps += dep_xkb
 endif
 
 if is_unixy and not dep_x11.found() and not dep_wayland_client.found()
@@ -107,61 +114,38 @@ inc_common = [
     include_directories('include'),
 ]
 
-dep_vulkan = dependency('vulkan', required: get_option('use_system_vulkan'))
 dep_pthread = dependency('threads')
 
-# Check for generic C arguments
-c_args = []
-foreach a : ['-Werror=implicit-function-declaration',
-             '-Werror=missing-prototypes', '-Werror=return-type',
-             '-Werror=incompatible-pointer-types',
-             '-fno-math-errno',
-             '-fno-trapping-math', '-Qunused-arguments']
-  if cc.has_argument(a)
-    c_args += a
-  endif
-endforeach
+add_project_arguments(
+  cc.get_supported_arguments([
+    '-Werror=implicit-function-declaration',
+    '-Werror=missing-declarations',
+    '-Werror=missing-prototypes',
+    '-Werror=return-type',
+    '-Werror=incompatible-pointer-types',
+    '-Wno-unused-parameter',
+    '-Qunused-arguments',
+    '-fno-math-errno',
+    '-fno-trapping-math',
+    '-Wno-missing-field-initializers',
+  ]), language : ['c'],
+)
 
-foreach a : ['missing-field-initializers', 'format-truncation']
-  if cc.has_argument('-W' + a)
-    c_args += '-Wno-' + a
-  endif
-endforeach
-
-# Check for generic C++ arguments
-cpp_args = []
-foreach a : ['-Werror=return-type',
-             '-fno-math-errno', '-fno-trapping-math',
-             '-Qunused-arguments']
-  if cpp.has_argument(a)
-    cpp_args += a
-  endif
-endforeach
-
-# For some reason, the test for -Wno-foo always succeeds with gcc, even if the
-# option is not supported. Hence, check for -Wfoo instead.
-
-foreach a : ['non-virtual-dtor', 'missing-field-initializers', 'format-truncation']
-  if cpp.has_argument('-W' + a)
-    cpp_args += '-Wno-' + a
-  endif
-endforeach
-
-no_override_init_args = []
-foreach a : ['override-init', 'initializer-overrides']
-  if cc.has_argument('-W' + a)
-    no_override_init_args += '-Wno-' + a
-  endif
-endforeach
+add_project_arguments(
+  cpp.get_supported_arguments([
+    '-Werror=missing-declarations',
+    '-Werror=return-type',
+    '-Wno-unused-parameter',
+    '-Qunused-arguments',
+    '-fno-math-errno',
+    '-fno-trapping-math',
+    '-Wno-non-virtual-dtor',
+    '-Wno-missing-field-initializers',
+  ]), language : ['cpp'],
+)
 
 foreach a : pre_args
   add_project_arguments(a, language : ['c', 'cpp'])
-endforeach
-foreach a : c_args
-  add_project_arguments(a, language : ['c'])
-endforeach
-foreach a : cpp_args
-  add_project_arguments(a, language : ['cpp'])
 endforeach
 
 # check for dl support
@@ -182,17 +166,18 @@ else
   dep_rt = null_dep
 endif
 
-if dep_vulkan.found()
-  datadir = get_option('datadir')
-  if not datadir.startswith('/')
-    datadir = get_option('prefix') / datadir
-  endif
-  vk_api_xml = files(datadir / 'vulkan/registry/vk.xml')
-else
+# Commented code can be used if mangohud start using latest SDK Vulkan-Headers
+# Allowing user to build mangohud using system Vulkan-Headers
+#if not dependency('VulkanHeaders').found()
   vkh_sp = subproject('vulkan-headers')
   vk_api_xml = vkh_sp.get_variable('vulkan_api_xml')
   dep_vulkan = vkh_sp.get_variable('vulkan_headers_dep')
-endif
+#else
+#  dep_vulkan = dependency('VulkanHeaders', required: true)
+#  vk_api_xml = files('/usr/share/vulkan/registry/vk.xml')
+#endif
+
+
 
 vk_enum_to_str = custom_target(
   'vk_enum_to_str',
@@ -204,20 +189,9 @@ vk_enum_to_str = custom_target(
   ],
 )
 
-util_files = files(
-  'src/mesa/util/os_socket.c',
-  'src/mesa/util/os_time.c',
-)
-
-sizeof_ptr = cc.sizeof('void*')
-if sizeof_ptr == 8
-  pre_args += '-DMANGOHUD_ARCH="64bit"'
-elif sizeof_ptr == 4
-  pre_args += '-DMANGOHUD_ARCH="32bit"'
-endif
-
-dearimgui_sp = subproject('imgui', default_options: [
+imgui_options = [
   'default_library=static',
+  'werror=false',
   # use 'auto_features=disabled' once available: https://github.com/mesonbuild/meson/issues/5320
   'dx9=disabled',
   'dx10=disabled',
@@ -230,14 +204,54 @@ dearimgui_sp = subproject('imgui', default_options: [
   'sdl2=disabled',
   'osx=disabled',
   'win=disabled',
-  'marmalade=disabled',
   'allegro5=disabled',
-])
-dearimgui_dep = dearimgui_sp.get_variable('imgui_dep')
+  'webgpu=disabled',
+  'sdl_renderer=disabled'
+]
+
+sizeof_ptr = cc.sizeof('void*')
+if sizeof_ptr == 8
+  pre_args += '-DMANGOHUD_ARCH="64bit"'
+elif sizeof_ptr == 4
+  pre_args += '-DMANGOHUD_ARCH="32bit"'
+endif
+
+if get_option('mangoapp')
+  imgui_options += [
+    'opengl=enabled',
+    'glfw=enabled',
+  ]
+endif
+dearimgui_dep = dependency('imgui', fallback: ['imgui'], required: true, default_options: imgui_options)
+
+if is_unixy
+implot_dep = dependency('implot', fallback: ['implot'], required: true, default_options: ['default_library=static'])
+else
+implot_dep = null_dep
+implot_lib = static_library('nulllib', [])
+endif
+
+spdlog_options = [
+  'default_library=static',
+  'compile_library=true',
+  'werror=false',
+  'tests=disabled',
+  'external_fmt=disabled',
+  'std_format=disabled'
+]
+
+spdlog_dep = dependency('spdlog', required: false)
+
+if get_option('use_system_spdlog').disabled() or not spdlog_dep.found()
+    if get_option('use_system_spdlog').enabled()
+      warning('spdlog dependency not found following back to submodule')
+    endif
+    spdlog_sp = subproject('spdlog', default_options: spdlog_options)
+    spdlog_dep = spdlog_sp.get_variable('spdlog_dep')
+endif
 
 if ['windows', 'mingw'].contains(host_machine.system())
-  subdir('modules/minhook')
-  inc_common += ( include_directories('modules/minhook/include'))
+  minhook_dep = dependency('minhook', fallback: ['minhook', 'minhook_dep'], required: true)
   windows_deps = [
     minhook_dep,
   ]
@@ -245,5 +259,45 @@ else
   windows_deps = null_dep
 endif
 
+if get_option('mangoapp')
+  glfw3_dep = dependency('glfw3')
+  glew_dep = dependency('glew')
+endif
+
+json_dep = dependency('nlohmann_json')
 subdir('src')
-subdir('data')
+
+if get_option('include_doc')
+  subdir('data')
+endif
+
+if get_option('tests').enabled()
+  cmocka_dep = dependency('cmocka', fallback: ['cmocka', 'cmocka_dep'])
+
+  e = executable('amdgpu', 'tests/test_amdgpu.cpp',
+    files(
+      'src/amdgpu.cpp',
+      'src/cpu.cpp',
+      'src/gpu.cpp',
+      'src/gpu_fdinfo.cpp',
+      'src/nvidia.cpp',
+      'src/mesa/util/os_time.c',
+      'src/file_utils.cpp',
+    ),
+    cpp_args: ['-DTEST_ONLY'],
+    dependencies: [
+      cmocka_dep,
+      spdlog_dep,
+      implot_dep,
+      dearimgui_dep
+    ],
+    include_directories: inc_common)
+
+  test('test amdgpu', e, workdir : meson.project_source_root() + '/tests')
+
+endif
+
+# install helper scripts
+if get_option('mangoplot').enabled()
+  subdir('bin')
+endif

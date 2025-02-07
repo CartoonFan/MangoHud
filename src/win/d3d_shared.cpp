@@ -13,12 +13,13 @@ void init_d3d_shared(){
     vendorID = get_device_id_dxgi();
     if (cfg_inited)
         return;
-     parse_overlay_config(&params, getenv("MANGOHUD_CONFIG"));
+     parse_overlay_config(&params, getenv("MANGOHUD_CONFIG"), false);
+     _params = &params;
      cfg_inited = true;
     //  init_cpu_stats(params);
 }
 
 void d3d_run(){
-    check_keybinds(sw_stats, params, vendorID);
+    check_keybinds(params);
 	update_hud_info(sw_stats, params, vendorID);
 }

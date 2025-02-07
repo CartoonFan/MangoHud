@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cctype>
 #include <locale>
+#include <cstring>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-function"
@@ -110,7 +111,7 @@ static float parse_float(const std::string& s, std::size_t* float_len = nullptr)
     return ret;
 }
 
-static std::vector<std::string> str_tokenize(const std::string& s, const std::string&& delims = ",:+")
+static std::vector<std::string> str_tokenize(const std::string& s, const std::string& delims = ",:+")
 {
    std::vector<std::string> v;
    size_t old_n = 0, new_n = 0;
@@ -125,6 +126,22 @@ static std::vector<std::string> str_tokenize(const std::string& s, const std::st
       old_n = new_n + 1;
    }
    return v;
+}
+
+static void trim_char(char* str) {
+    if(!str)
+        return;
+
+    char* ptr = str;
+    int len = strlen(ptr);
+
+    while(len-1 > 0 && isspace(ptr[len-1]))
+        ptr[--len] = 0;
+
+    while(*ptr && isspace(*ptr))
+        ++ptr, --len;
+
+    memmove(str, ptr, len + 1);
 }
 
 #pragma GCC diagnostic pop

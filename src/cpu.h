@@ -6,8 +6,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <memory>
-
+#include <string>
+#ifdef WIN32
+#include <windows.h>
+#endif
 #include "timing.hpp"
+#include "gpu.h"
 
 typedef struct CPUData_ {
    unsigned long long int totalTime;
@@ -35,20 +39,25 @@ typedef struct CPUData_ {
    unsigned long long int softIrqPeriod;
    unsigned long long int stealPeriod;
    unsigned long long int guestPeriod;
+
+   int cpu_id;
    float percent;
    int mhz;
    int temp;
    int cpu_mhz;
-   int power;
+   float power;
 } CPUData;
 
 enum {
    CPU_POWER_K10TEMP,
    CPU_POWER_ZENPOWER,
-   CPU_POWER_RAPL
+   CPU_POWER_ZENERGY,
+   CPU_POWER_RAPL,
+   CPU_POWER_AMDGPU
 };
 
 struct CPUPowerData {
+   virtual ~CPUPowerData() = default;
    int source;
 };
 
@@ -66,12 +75,18 @@ struct CPUPowerData_k10temp : public CPUPowerData {
          fclose(this->socVoltageFile);
       if(this->socCurrentFile)
          fclose(this->socCurrentFile);
+      if(this->corePowerFile)
+         fclose(this->corePowerFile);
+      if(this->socPowerFile)
+         fclose(this->socPowerFile);
    };
 
    FILE* coreVoltageFile {nullptr};
    FILE* coreCurrentFile {nullptr};
    FILE* socVoltageFile {nullptr};
    FILE* socCurrentFile {nullptr};
+   FILE* corePowerFile {nullptr};
+   FILE* socPowerFile {nullptr};
 };
 
 struct CPUPowerData_zenpower : public CPUPowerData {
@@ -90,9 +105,27 @@ struct CPUPowerData_zenpower : public CPUPowerData {
    FILE* socPowerFile {nullptr};
 };
 
+struct CPUPowerData_zenergy : public CPUPowerData {
+   CPUPowerData_zenergy() {
+      this->source = CPU_POWER_ZENERGY;
+      this->lastCounterValue = 0;
+      this->lastCounterValueTime = Clock::now();
+   };
+
+   ~CPUPowerData_zenergy() {
+      if(this->energyCounterFile)
+         fclose(this->energyCounterFile);
+   };
+
+   FILE* energyCounterFile {nullptr};
+   uint64_t lastCounterValue;
+   Clock::time_point lastCounterValueTime;
+};
+
 struct CPUPowerData_rapl : public CPUPowerData {
    CPUPowerData_rapl() {
       this->source = CPU_POWER_RAPL;
+      this->lastCounterValue = 0;
       this->lastCounterValueTime = Clock::now();
    };
 
@@ -102,8 +135,14 @@ struct CPUPowerData_rapl : public CPUPowerData {
    };
 
    FILE* energyCounterFile {nullptr};
-   int lastCounterValue;
+   uint64_t lastCounterValue;
    Clock::time_point lastCounterValueTime;
+};
+
+struct CPUPowerData_amdgpu : public CPUPowerData {
+   CPUPowerData_amdgpu() {
+      this->source = CPU_POWER_AMDGPU;
+   };
 };
 
 class CPUStats
@@ -122,6 +161,7 @@ public:
    bool UpdateCoreMhz();
    bool UpdateCpuTemp();
    bool UpdateCpuPower();
+   bool ReadcpuTempFile(int& temp);
    bool GetCpuFile();
    bool InitCpuPowerData();
    double GetCPUPeriod() { return m_cpuPeriod; }
@@ -132,6 +172,7 @@ public:
    const CPUData& GetCPUDataTotal() const {
       return m_cpuDataTotal;
    }
+   std::string cpu_type = "CPU";
 private:
    unsigned long long int m_boottime = 0;
    std::vector<CPUData> m_cpuData;
@@ -145,5 +186,7 @@ private:
 };
 
 extern CPUStats cpuStats;
-
+#ifdef WIN32
+uint64_t FileTimeToInt64( const FILETIME& ft );
+#endif
 #endif //MANGOHUD_CPU_H

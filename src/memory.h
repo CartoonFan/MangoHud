@@ -2,20 +2,12 @@
 #ifndef MANGOHUD_MEMORY_H
 #define MANGOHUD_MEMORY_H
 
-#include <stdio.h>
-#include <thread>
+#include <cstdint>
 
-extern float memused, memmax, swapused, swapmax;
+extern float memused, memmax, swapused;
+extern uint64_t proc_mem_resident, proc_mem_shared, proc_mem_virt;
 
-struct memory_information {
-  /* memory information in kilobytes */
-  unsigned long long mem, memwithbuffers, memeasyfree, memfree, memmax,
-      memdirty;
-  unsigned long long swap, swapfree, swapmax;
-  unsigned long long bufmem, buffers, cached;
-};
-
-void update_meminfo(void);
-FILE *open_file(const char *file, int *reported);
+void update_meminfo();
+void update_procmem();
 
 #endif //MANGOHUD_MEMORY_H

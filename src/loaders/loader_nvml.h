@@ -37,6 +37,11 @@ class libnvml_loader {
   decltype(&::nvmlDeviceGetClockInfo) nvmlDeviceGetClockInfo;
   decltype(&::nvmlErrorString) nvmlErrorString;
   decltype(&::nvmlDeviceGetPowerUsage) nvmlDeviceGetPowerUsage;
+  decltype(&::nvmlDeviceGetCurrentClocksThrottleReasons) nvmlDeviceGetCurrentClocksThrottleReasons;
+  decltype(&::nvmlUnitGetFanSpeedInfo) nvmlUnitGetFanSpeedInfo;
+  decltype(&::nvmlUnitGetHandleByIndex) nvmlUnitGetHandleByIndex;
+  decltype(&::nvmlDeviceGetFanSpeed) nvmlDeviceGetFanSpeed;
+  decltype(&::nvmlDeviceGetGraphicsRunningProcesses) nvmlDeviceGetGraphicsRunningProcesses;
 
  private:
   void CleanUp(bool unload);

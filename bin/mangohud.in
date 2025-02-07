@@ -1,28 +1,56 @@
 #!/bin/sh
 
 if [ "$#" -eq 0 ]; then
-	programname=`basename "$0"`
-	echo "ERROR: No program supplied"
-	echo
-	echo "Usage: $programname <program>"
-	exit 1
+    programname=$(basename "$0")
+    echo "ERROR: No program supplied"
+    echo
+    echo "Usage: $programname <program>"
+    exit 1
+fi
+
+
+# Add exe names newline separated to the string to disable LD_PRELOAD
+DISABLE_LD_PRELOAD="cs2.sh
+"
+
+MANGOHUD_LIB_NAME="@ld_libdir_mangohud@libMangoHud_shim.so"
+
+if [ "$1" = "--version" ]; then
+    echo @version@
+    exit 0
 fi
 
 if [ "$1" = "--dlsym" ]; then
-	MANGOHUD_DLSYM=1
-	shift
+    # no-op, dlsym enabled by default
+    shift
 fi
 
-MANGOHUD_LIB_NAME="@ld_libdir_mangohud_abs@libMangoHud.so"
+# grab all arguments from command_line
+command_line="$*"
+# flag for disable_preload
+disable_preload=false
 
-if [ "$MANGOHUD_DLSYM" = "1" ]; then
-	MANGOHUD_LIB_NAME="@ld_libdir_mangohud_abs@libMangoHud_dlsym.so:${MANGOHUD_LIB_NAME}"
+# Check if the script name or any of the executables in DISABLE_LD_PRELOAD are in the command line
+for exe in $DISABLE_LD_PRELOAD; do
+    if echo "$command_line" | grep -q "$exe"; then
+        disable_preload=true
+        break
+    fi
+done
+
+if [ "$disable_preload" = true ]; then
+    exec env MANGOHUD=1 "$@"
+else
+    # Make sure we don't append mangohud lib multiple times
+    # otherwise, this could cause issues with the steam runtime
+    case ":${LD_PRELOAD-}:" in
+        (*:$MANGOHUD_LIB_NAME:*)
+            ;;
+        (*)
+            # Preload using the plain filenames of the libs, the dynamic linker will
+            # figure out whether the 32 or 64 bit version should be used
+            LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}${MANGOHUD_LIB_NAME}"
+    esac
+
+    exec env MANGOHUD=1 LD_PRELOAD="${LD_PRELOAD}" "$@"
 fi
-
-# Preload using the plain filenames of the libs, the dynamic linker will
-# figure out whether the 32 or 64 bit version should be used, and will search
-# for it in the correct directory
-LD_PRELOAD="${LD_PRELOAD}:${MANGOHUD_LIB_NAME}"
-LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:@ld_libdir_mangohud@"
-
-exec env DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1 NODEVICE_SELECT=1 MANGOHUD=1 LD_LIBRARY_PATH="${LD_LIBRARY_PATH}" LD_PRELOAD="${LD_PRELOAD}" "$@"

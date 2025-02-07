@@ -1,6 +1,7 @@
+#pragma once
 #ifndef LIBRARY_LOADER_NVCTRL_H
 #define LIBRARY_LOADER_NVCTRL_H
-#define Bool bool
+// #define Bool bool
 #include <X11/Xlib.h>
 #include "NVCtrl/NVCtrlLib.h"
 #define LIBRARY_LOADER_NVCTRL_H_DLOPEN
@@ -24,6 +25,7 @@ class libnvctrl_loader {
   decltype(&::XNVCTRLQueryAttribute) XNVCTRLQueryAttribute;
   decltype(&::XNVCTRLQueryTargetStringAttribute) XNVCTRLQueryTargetStringAttribute;
   decltype(&::XNVCTRLQueryTargetAttribute64) XNVCTRLQueryTargetAttribute64;
+  decltype(&::XNVCTRLQueryTargetCount) XNVCTRLQueryTargetCount;
 
  private:
   void CleanUp(bool unload);

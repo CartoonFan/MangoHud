@@ -3,24 +3,6 @@
 #include <fstream>
 #include <string>
 
-std::string read_line(const std::string& filename)
-{
-    std::string line;
-    std::ifstream file(filename);
-    std::getline(file, line);
-    return line;
-}
-
-bool find_folder(const char* root, const char* prefix, std::string& dest)
-{
-    return false;
-}
-
-bool find_folder(const std::string& root, const std::string& prefix, std::string& dest)
-{
-    return find_folder(root.c_str(), prefix.c_str(), dest);
-}
-
 std::vector<std::string> ls(const char* root, const char* prefix, LS_FLAGS flags)
 {
     std::vector<std::string> list;

@@ -2,29 +2,32 @@
 #include <array>
 #include <cstring>
 #include <dlfcn.h>
+#include <chrono>
+#include <iomanip>
+#include <spdlog/spdlog.h>
 #include "real_dlsym.h"
 #include "mesa/util/macros.h"
 #include "mesa/util/os_time.h"
 #include "blacklist.h"
-
-#include <chrono>
-#include <iomanip>
-
-#include "imgui_hud.h"
+#include "gl_hud.h"
+#ifdef HAVE_WAYLAND
+#include "wayland_hook.h"
+#endif
 
 using namespace MangoHud::GL;
 
-#define EXPORT_C_(type) extern "C" __attribute__((__visibility__("default"))) type
+#define EGL_PLATFORM_WAYLAND_KHR          0x31D8
+
 EXPORT_C_(void *) eglGetProcAddress(const char* procName);
 
-void* get_egl_proc_address(const char* name) {
+static void* get_egl_proc_address(const char* name) {
 
     void *func = nullptr;
     static void *(*pfn_eglGetProcAddress)(const char*) = nullptr;
     if (!pfn_eglGetProcAddress) {
-        void *handle = real_dlopen("libEGL.so.1", RTLD_LAZY|RTLD_LOCAL);
+        void *handle = real_dlopen("libEGL.so.1", RTLD_LAZY);
         if (!handle) {
-            std::cerr << "MANGOHUD: Failed to open " << "" MANGOHUD_ARCH << " libEGL.so.1: " << dlerror() << std::endl;
+            SPDLOG_ERROR("Failed to open " MANGOHUD_ARCH " libEGL.so.1: {}", dlerror());
         } else {
             pfn_eglGetProcAddress = reinterpret_cast<decltype(pfn_eglGetProcAddress)>(real_dlsym(handle, "eglGetProcAddress"));
         }
@@ -37,22 +40,13 @@ void* get_egl_proc_address(const char* name) {
         func = get_proc_address( name );
 
     if (!func) {
-        std::cerr << "MANGOHUD: Failed to get function '" << name << "'" << std::endl;
+        SPDLOG_ERROR("Failed to get function '{}'", name);
     }
 
     return func;
 }
 
-//EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface read, EGLContext ctx);
-EXPORT_C_(int) eglMakeCurrent_OFF(void *dpy, void *draw, void *read,void *ctx) {
-
-#ifndef NDEBUG
-    std::cerr << __func__ << ": " << draw << ", " << ctx << std::endl;
-#endif
-    int ret = 0;
-    return ret;
-}
-
+EXPORT_C_(unsigned int) eglSwapBuffers( void* dpy, void* surf);
 EXPORT_C_(unsigned int) eglSwapBuffers( void* dpy, void* surf)
 {
     static int (*pfn_eglSwapBuffers)(void*, void*) = nullptr;
@@ -64,20 +58,84 @@ EXPORT_C_(unsigned int) eglSwapBuffers( void* dpy, void* surf)
         if (!pfn_eglQuerySurface)
             pfn_eglQuerySurface = reinterpret_cast<decltype(pfn_eglQuerySurface)>(get_egl_proc_address("eglQuerySurface"));
 
-
-        //std::cerr << __func__ << "\n";
-
-        imgui_create(surf);
+        imgui_create(surf, gl_wsi::GL_WSI_EGL);
 
         int width=0, height=0;
         if (pfn_eglQuerySurface(dpy, surf, 0x3056, &height) &&
             pfn_eglQuerySurface(dpy, surf, 0x3057, &width))
             imgui_render(width, height);
 
-        //std::cerr << "\t" << width << " x " << height << "\n";
+        using namespace std::chrono_literals;
+        if (fps_limit_stats.targetFrameTime > 0s && fps_limit_stats.method == FPS_LIMIT_METHOD_EARLY){
+            fps_limit_stats.frameStart = Clock::now();
+            FpsLimiter(fps_limit_stats);
+            fps_limit_stats.frameEnd = Clock::now();
+        }
     }
 
-    return pfn_eglSwapBuffers(dpy, surf);
+    int res = pfn_eglSwapBuffers(dpy, surf);
+
+    if (!is_blacklisted()) {
+        using namespace std::chrono_literals;
+        if (fps_limit_stats.targetFrameTime > 0s && fps_limit_stats.method == FPS_LIMIT_METHOD_LATE){
+            fps_limit_stats.frameStart = Clock::now();
+            FpsLimiter(fps_limit_stats);
+            fps_limit_stats.frameEnd = Clock::now();
+        }
+    }
+
+    return res;
+}
+
+EXPORT_C_(void*) eglGetPlatformDisplay( unsigned int platform, void* native_display, const intptr_t* attrib_list);
+EXPORT_C_(void*) eglGetPlatformDisplay( unsigned int platform, void* native_display, const intptr_t* attrib_list)
+{
+    static void* (*pfn_eglGetPlatformDisplay)(unsigned int, void*, const intptr_t*) = nullptr;
+    if (!pfn_eglGetPlatformDisplay)
+        pfn_eglGetPlatformDisplay = reinterpret_cast<decltype(pfn_eglGetPlatformDisplay)>(get_egl_proc_address("eglGetPlatformDisplay"));
+
+#ifdef HAVE_WAYLAND
+    if(platform == EGL_PLATFORM_WAYLAND_KHR)
+    {
+        wl_display_ptr = (struct wl_display*)native_display;
+        HUDElements.display_server = HUDElements.display_servers::WAYLAND;
+        wl_handle = real_dlopen("libwayland-client.so", RTLD_LAZY);
+        init_wayland_data();
+    }
+#endif
+
+    return pfn_eglGetPlatformDisplay(platform, native_display, attrib_list);
+}
+
+EXPORT_C_(void*) eglGetDisplay( void* native_display );
+EXPORT_C_(void*) eglGetDisplay( void* native_display )
+{
+    static void* (*pfn_eglGetDisplay)(void*) = nullptr;
+    if (!pfn_eglGetDisplay)
+        pfn_eglGetDisplay = reinterpret_cast<decltype(pfn_eglGetDisplay)>(get_egl_proc_address("eglGetDisplay"));
+
+#ifdef HAVE_WAYLAND
+    try
+    {
+        void** display_ptr = (void**)native_display;
+        if (native_display)
+        {
+            wl_interface* iface = (wl_interface*)*display_ptr;
+            if(iface && strcmp(iface->name, wl_display_interface.name) == 0)
+            {
+                wl_display_ptr = (struct wl_display*)native_display;
+                HUDElements.display_server = HUDElements.display_servers::WAYLAND;
+                wl_handle = real_dlopen("libwayland-client.so", RTLD_LAZY);
+                init_wayland_data();
+            }
+        }
+    }
+    catch(...)
+    {
+    }
+#endif
+
+    return pfn_eglGetDisplay(native_display);
 }
 
 struct func_ptr {
@@ -85,13 +143,16 @@ struct func_ptr {
    void *ptr;
 };
 
-static std::array<const func_ptr, 2> name_to_funcptr_map = {{
+static std::array<const func_ptr, 4> name_to_funcptr_map = {{
 #define ADD_HOOK(fn) { #fn, (void *) fn }
    ADD_HOOK(eglGetProcAddress),
    ADD_HOOK(eglSwapBuffers),
+   ADD_HOOK(eglGetPlatformDisplay),
+   ADD_HOOK(eglGetDisplay)
 #undef ADD_HOOK
 }};
 
+EXPORT_C_(void *) mangohud_find_egl_ptr(const char *name);
 EXPORT_C_(void *) mangohud_find_egl_ptr(const char *name)
 {
   if (is_blacklisted())
@@ -106,10 +167,9 @@ EXPORT_C_(void *) mangohud_find_egl_ptr(const char *name)
 }
 
 EXPORT_C_(void *) eglGetProcAddress(const char* procName) {
-    //std::cerr << __func__ << ": " << procName << std::endl;
-
     void* real_func = get_egl_proc_address(procName);
     void* func = mangohud_find_egl_ptr(procName);
+    SPDLOG_TRACE("{}: proc: {}, real: {}, fun: {}", __func__, procName, real_func, func);
     if (func && real_func)
         return func;
 

@@ -3,6 +3,7 @@
 #define MANGOHUD_IOSTATS_H
 
 #include <inttypes.h>
+#include "timing.hpp"
 
 struct iostats {
     struct {
@@ -21,8 +22,10 @@ struct iostats {
       float read;
       float write;
     } per_second;
+    Clock::time_point last_update;
 };
 
-void getIoStats(void *args);
+extern iostats g_io_stats;
+void getIoStats(iostats& io);
 
 #endif //MANGOHUD_IOSTATS_H

@@ -40,6 +40,10 @@ lib32-mangohud*.tar.*
 subprojects/packagecache/
 subprojects/Vulkan-Headers-*/
 subprojects/imgui-*/
+subprojects/spdlog-*/
+subprojects/nlohmann_json-*/
+subprojects/implot-*/
+subprojects/cmocka/
 
 #GNU Global Metadata
 **/GPATH

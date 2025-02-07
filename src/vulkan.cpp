@@ -33,44 +33,44 @@
 #include <vector>
 #include <list>
 #include <array>
-#ifdef __gnu_linux__
-#include <libgen.h>
-#include <unistd.h>
-#endif
+#include <iomanip>
+#include <sstream>
+#include <inttypes.h>
+#include <spdlog/spdlog.h>
+#include <imgui.h>
 
+#include "mesa/util/macros.h" // defines "restrict" for vk_util.h
+#include "mesa/util/os_socket.h"
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_layer.h>
-
-#include "imgui.h"
+#include <vulkan/vk_util.h>
+#include "vk_enum_to_str.h"
 
 #include "overlay.h"
-#include "font_default.h"
-
-// #include "util/debug.h"
-#include <inttypes.h>
-#include "mesa/util/macros.h"
-#include "mesa/util/os_time.h"
-#include "mesa/util/os_socket.h"
-
-#include "vk_enum_to_str.h"
-#include <vulkan/vk_util.h>
-
-#include "string_utils.h"
-#include "file_utils.h"
-#include "gpu.h"
-#include "logging.h"
-#include "cpu.h"
-#include "memory.h"
 #include "notify.h"
 #include "blacklist.h"
 #include "pci_ids.h"
-#include "timing.hpp"
+#if defined(HAVE_WAYLAND)
+#include "wayland_hook.h"
+#endif
+#include "real_dlsym.h"
+#include "file_utils.h"
+#ifdef __linux__
+#include <dlfcn.h>
+#include "implot.h"
+#endif
 
-string gpuString,wineVersion,wineProcess;
+using namespace std;
+
 float offset_x, offset_y, hudSpacing;
 int hudFirstRow, hudSecondRow;
 VkPhysicalDeviceDriverProperties driverProps = {};
-int32_t deviceID;
+
+#if !defined(_WIN32)
+namespace MangoHud { namespace GL {
+   extern swapchain_stats sw_stats;
+}}
+#endif
 
 /* Mapped from VkInstace/VkPhysicalDevice */
 struct instance_data {
@@ -79,7 +79,9 @@ struct instance_data {
    struct overlay_params params;
    uint32_t api_version;
    string engineName, engineVersion;
+   enum EngineTypes engine;
    notify_thread notifier;
+   int control_client;
 };
 
 /* Mapped from VkDevice */
@@ -101,7 +103,6 @@ struct device_data {
 };
 
 /* Mapped from VkCommandBuffer */
-struct queue_data;
 struct command_buffer_data {
    struct device_data *device;
 
@@ -174,6 +175,7 @@ struct swapchain_data {
 
    /**/
    ImGuiContext* imgui_context;
+   ImFontAtlas* font_atlas;
    ImVec2 window_size;
 
    struct swapchain_stats sw_stats;
@@ -213,15 +215,12 @@ static void unmap_object(uint64_t obj)
    do { \
       VkResult __result = (expr); \
       if (__result != VK_SUCCESS) { \
-         fprintf(stderr, "'%s' line %i failed with %s\n", \
+         SPDLOG_ERROR("'{}' line {} failed with {}", \
                  #expr, __LINE__, vk_Result_to_str(__result)); \
       } \
    } while (0)
 
 /**/
-
-#define CHAR_CELSIUS    "\xe2\x84\x83"
-#define CHAR_FAHRENHEIT "\xe2\x84\x89"
 
 static void shutdown_swapchain_font(struct swapchain_data*);
 
@@ -257,6 +256,7 @@ static struct instance_data *new_instance_data(VkInstance instance)
    data->instance = instance;
    data->params = {};
    data->params.control = -1;
+   data->control_client = -1;
    map_object(HKEY(data->instance), data);
    return data;
 }
@@ -399,6 +399,7 @@ static struct swapchain_data *new_swapchain_data(VkSwapchainKHR swapchain,
    data->device = device_data;
    data->swapchain = swapchain;
    data->window_size = ImVec2(instance_data->params.width, instance_data->params.height);
+   data->font_atlas = IM_NEW(ImFontAtlas);
    map_object(HKEY(data->swapchain), data);
    return data;
 }
@@ -409,7 +410,7 @@ static void destroy_swapchain_data(struct swapchain_data *data)
    delete data;
 }
 
-struct overlay_draw *get_overlay_draw(struct swapchain_data *data)
+static struct overlay_draw *get_overlay_draw(struct swapchain_data *data)
 {
    struct device_data *device_data = data->device;
    struct overlay_draw *draw = data->draws.empty() ?
@@ -457,263 +458,27 @@ struct overlay_draw *get_overlay_draw(struct swapchain_data *data)
    return draw;
 }
 
-void init_cpu_stats(overlay_params& params)
-{
-#ifdef __gnu_linux__
-   auto& enabled = params.enabled;
-   enabled[OVERLAY_PARAM_ENABLED_cpu_stats] = cpuStats.Init()
-                           && enabled[OVERLAY_PARAM_ENABLED_cpu_stats];
-   enabled[OVERLAY_PARAM_ENABLED_cpu_temp] = cpuStats.GetCpuFile()
-                           && enabled[OVERLAY_PARAM_ENABLED_cpu_temp];
-   enabled[OVERLAY_PARAM_ENABLED_cpu_power] = cpuStats.InitCpuPowerData()
-                           && enabled[OVERLAY_PARAM_ENABLED_cpu_power];
-#endif
-}
-
-struct PCI_BUS {
-   int domain;
-   int bus;
-   int slot;
-   int func;
-};
-
-void init_gpu_stats(uint32_t& vendorID, overlay_params& params)
-{
-   //if (!params.enabled[OVERLAY_PARAM_ENABLED_gpu_stats])
-   //   return;
-
-   PCI_BUS pci;
-   bool pci_bus_parsed = false;
-   const char *pci_dev = nullptr;
-   if (!params.pci_dev.empty())
-      pci_dev = params.pci_dev.c_str();
-
-   // for now just checks if pci bus parses correctly, if at all necessary
-   if (pci_dev) {
-      if (sscanf(pci_dev, "%04x:%02x:%02x.%x",
-               &pci.domain, &pci.bus,
-               &pci.slot, &pci.func) == 4) {
-         pci_bus_parsed = true;
-         // reformat back to sysfs file name's and nvml's expected format
-         // so config file param's value format doesn't have to be as strict
-         std::stringstream ss;
-         ss << std::hex
-            << std::setw(4) << std::setfill('0') << pci.domain << ":"
-            << std::setw(2) << pci.bus << ":"
-            << std::setw(2) << pci.slot << "."
-            << std::setw(1) << pci.func;
-         params.pci_dev = ss.str();
-         pci_dev = params.pci_dev.c_str();
-#ifndef NDEBUG
-         std::cerr << "MANGOHUD: PCI device ID: '" << pci_dev << "'\n";
-#endif
-      } else {
-         std::cerr << "MANGOHUD: Failed to parse PCI device ID: '" << pci_dev << "'\n";
-         std::cerr << "MANGOHUD: Specify it as 'domain:bus:slot.func'\n";
-      }
-   }
-
-   // NVIDIA or Intel but maybe has Optimus
-   if (vendorID == 0x8086
-      || vendorID == 0x10de) {
-
-      if(checkNvidia(pci_dev))
-         vendorID = 0x10de;
-      else
-         params.enabled[OVERLAY_PARAM_ENABLED_gpu_stats] = false;
-   }
-
-#ifdef __gnu_linux__
-   if (vendorID == 0x8086 || vendorID == 0x1002
-       || gpu.find("Radeon") != std::string::npos
-       || gpu.find("AMD") != std::string::npos) {
-      string path;
-      string drm = "/sys/class/drm/";
-
-      auto dirs = ls(drm.c_str(), "card");
-      for (auto& dir : dirs) {
-         path = drm + dir;
-
-#ifndef NDEBUG
-         std::cerr << "amdgpu path check: " << path << "/device/vendor" << std::endl;
-#endif
-         string device = read_line(path + "/device/device");
-         deviceID = strtol(device.c_str(), NULL, 16);
-         string line = read_line(path + "/device/vendor");
-         trim(line);
-         if (line != "0x1002" || !file_exists(path + "/device/gpu_busy_percent"))
-            continue;
-
-         path += "/device";
-         if (pci_bus_parsed && pci_dev) {
-            string pci_device = read_symlink(path.c_str());
-#ifndef NDEBUG
-            std::cerr << "PCI device symlink: " << pci_device << "\n";
-#endif
-            if (!ends_with(pci_device, pci_dev)) {
-               std::cerr << "MANGOHUD: skipping GPU, no PCI ID match\n";
-               continue;
-            }
-         }
-
-#ifndef NDEBUG
-           std::cerr << "using amdgpu path: " << path << std::endl;
-#endif
-
-         if (!amdgpu.busy)
-            amdgpu.busy = fopen((path + "/gpu_busy_percent").c_str(), "r");
-         if (!amdgpu.vram_total)
-            amdgpu.vram_total = fopen((path + "/mem_info_vram_total").c_str(), "r");
-         if (!amdgpu.vram_used)
-            amdgpu.vram_used = fopen((path + "/mem_info_vram_used").c_str(), "r");
-
-         path += "/hwmon/";
-         string tempFolder;
-         if (find_folder(path, "hwmon", tempFolder)) {
-            if (!amdgpu.core_clock)
-               amdgpu.core_clock = fopen((path + tempFolder + "/freq1_input").c_str(), "r");
-            if (!amdgpu.memory_clock)
-               amdgpu.memory_clock = fopen((path + tempFolder + "/freq2_input").c_str(), "r");
-            if (!amdgpu.temp)
-               amdgpu.temp = fopen((path + tempFolder + "/temp1_input").c_str(), "r");
-            if (!amdgpu.power_usage)
-               amdgpu.power_usage = fopen((path + tempFolder + "/power1_average").c_str(), "r");
-
-            vendorID = 0x1002;
-            break;
-         }
-      }
-
-      // don't bother then
-      if (!amdgpu.busy && !amdgpu.temp && !amdgpu.vram_total && !amdgpu.vram_used) {
-         params.enabled[OVERLAY_PARAM_ENABLED_gpu_stats] = false;
-      }
-   }
-#endif
-   if (!params.permit_upload)
-      printf("MANGOHUD: Uploading is disabled (permit_upload = 0)\n");
-}
-
-void init_system_info(){
-   #ifdef __gnu_linux__
-      const char* ld_preload = getenv("LD_PRELOAD");
-      if (ld_preload)
-         unsetenv("LD_PRELOAD");
-
-      ram =  exec("cat /proc/meminfo | grep 'MemTotal' | awk '{print $2}'");
-      trim(ram);
-      cpu =  exec("cat /proc/cpuinfo | grep 'model name' | tail -n1 | sed 's/^.*: //' | sed 's/([^)]*)/()/g' | tr -d '(/)'");
-      trim(cpu);
-      kernel = exec("uname -r");
-      trim(kernel);
-      os = exec("cat /etc/*-release | grep 'PRETTY_NAME' | cut -d '=' -f 2-");
-      os.erase(remove(os.begin(), os.end(), '\"' ), os.end());
-      trim(os);
-      cpusched = read_line("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor");
-
-      const char* mangohud_recursion = getenv("MANGOHUD_RECURSION");
-      if (!mangohud_recursion) {
-         setenv("MANGOHUD_RECURSION", "1", 1);
-         driver = exec("glxinfo -B | grep 'OpenGL version' | sed 's/^.*: //' | sed 's/([^()]*)//g' | tr -s ' '");
-         trim(driver);
-         unsetenv("MANGOHUD_RECURSION");
-      } else {
-         driver = "MangoHud glxinfo recursion detected";
-      }
-
-// Get WINE version
-
-      wineProcess = get_exe_path();
-      auto n = wineProcess.find_last_of('/');
-      string preloader = wineProcess.substr(n + 1);
-      if (preloader == "wine-preloader" || preloader == "wine64-preloader") {
-         // Check if using Proton
-         if (wineProcess.find("/dist/bin/wine") != std::string::npos) {
-            stringstream ss;
-            ss << dirname((char*)wineProcess.c_str()) << "/../../version";
-            string protonVersion = ss.str();
-            ss.str(""); ss.clear();
-            ss << read_line(protonVersion);
-            std::getline(ss, wineVersion, ' '); // skip first number string
-            std::getline(ss, wineVersion, ' ');
-            trim(wineVersion);
-            string toReplace = "proton-";
-            size_t pos = wineVersion.find(toReplace);
-            if (pos != std::string::npos) {
-               // If found replace
-               wineVersion.replace(pos, toReplace.length(), "Proton ");
-            }
-            else {
-               // If not found insert for non official proton builds
-               wineVersion.insert(0, "Proton ");
-            }
-         }
-         else {
-            char *dir = dirname((char*)wineProcess.c_str());
-            stringstream findVersion;
-            findVersion << "\"" << dir << "/wine\" --version";
-            const char *wine_env = getenv("WINELOADERNOEXEC");
-            if (wine_env)
-               unsetenv("WINELOADERNOEXEC");
-            wineVersion = exec(findVersion.str());
-            std::cout << "WINE VERSION = " << wineVersion << "\n";
-            if (wine_env)
-               setenv("WINELOADERNOEXEC", wine_env, 1);
-         }
-      }
-      else {
-           wineVersion = "";
-      }
-      // check for gamemode and vkbasalt
-      stringstream ss;
-      string line;
-      auto pid = getpid();
-      string path = "/proc/" + to_string(pid) + "/map_files/";
-      auto files = exec("ls " + path);
-      ss << files;
-      while(std::getline(ss, line, '\n')){
-         auto file = path + line;
-         auto sym = read_symlink(file.c_str());
-         if (sym.find("gamemode") != std::string::npos)
-            HUDElements.gamemode_bol = true;
-         if (sym.find("vkbasalt") != std::string::npos)
-            HUDElements.vkbasalt_bol = true;
-         if (HUDElements.gamemode_bol && HUDElements.vkbasalt_bol)
-            break;
-      }
-
-      if (ld_preload)
-         setenv("LD_PRELOAD", ld_preload, 1);
-#ifndef NDEBUG
-      std::cout << "Ram:" << ram << "\n"
-                << "Cpu:" << cpu << "\n"
-                << "Kernel:" << kernel << "\n"
-                << "Os:" << os << "\n"
-                << "Gpu:" << gpu << "\n"
-                << "Driver:" << driver << "\n"
-                << "CPU Scheduler:" << cpusched << std::endl;
-#endif
-#endif
-}
-
 static void snapshot_swapchain_frame(struct swapchain_data *data)
 {
    struct device_data *device_data = data->device;
    struct instance_data *instance_data = device_data->instance;
    update_hud_info(data->sw_stats, instance_data->params, device_data->properties.vendorID);
-   check_keybinds(data->sw_stats, instance_data->params, device_data->properties.vendorID);
-
-   // not currently used
-   // if (instance_data->params.control >= 0) {
-   //    control_client_check(device_data);
-   //    process_control_socket(instance_data);
-   // }
+   check_keybinds(instance_data->params);
+#ifdef __linux__
+   if (instance_data->params.control >= 0) {
+      control_client_check(instance_data->params.control, instance_data->control_client, gpu.c_str());
+      process_control_socket(instance_data->control_client, instance_data->params);
+   }
+#endif
 }
 
 static void compute_swapchain_display(struct swapchain_data *data)
 {
    struct device_data *device_data = data->device;
    struct instance_data *instance_data = device_data->instance;
+
+   if (instance_data->params.no_display)
+      return;
 
    ImGui::SetCurrentContext(data->imgui_context);
    if (HUDElements.colors.update)
@@ -722,11 +487,11 @@ static void compute_swapchain_display(struct swapchain_data *data)
    ImGui::NewFrame();
    {
       ::scoped_lock lk(instance_data->notifier.mutex);
+      overlay_new_frame(instance_data->params);
       position_layer(data->sw_stats, instance_data->params, data->window_size);
       render_imgui(data->sw_stats, instance_data->params, data->window_size, true);
+      overlay_end_frame();
    }
-   ImGui::PopStyleVar(3);
-
    ImGui::EndFrame();
    ImGui::Render();
 
@@ -949,16 +714,15 @@ static void check_fonts(struct swapchain_data* data)
    struct device_data *device_data = data->device;
    struct instance_data *instance_data = device_data->instance;
    auto& params = instance_data->params;
-   ImGuiIO& io = ImGui::GetIO();
 
    if (params.font_params_hash != data->sw_stats.font_params_hash)
    {
-      std::cerr << "MANGOHUD: recreating font image\n";
-      VkDescriptorSet desc_set = (VkDescriptorSet)io.Fonts->TexID;
-      create_fonts(instance_data->params, data->sw_stats.font1, data->sw_stats.font_text);
+      SPDLOG_DEBUG("Recreating font image");
+      VkDescriptorSet desc_set = (VkDescriptorSet)data->font_atlas->TexID;
+      create_fonts(data->font_atlas, instance_data->params, data->sw_stats.font1, data->sw_stats.font_text);
       unsigned char* pixels;
       int width, height;
-      io.Fonts->GetTexDataAsAlpha8(&pixels, &width, &height);
+      data->font_atlas->GetTexDataAsAlpha8(&pixels, &width, &height);
 
       // wait for rendering to complete, if any
       device_data->vtable.DeviceWaitIdle(device_data->device);
@@ -969,15 +733,10 @@ static void check_fonts(struct swapchain_data* data)
       else
          desc_set = create_image_with_desc(data, width, height, VK_FORMAT_R8_UNORM, data->font_image, data->font_mem, data->font_image_view);
 
-      io.Fonts->SetTexID((ImTextureID)desc_set);
-
+      data->font_atlas->SetTexID((ImTextureID)desc_set);
       data->font_uploaded = false;
       data->sw_stats.font_params_hash = params.font_params_hash;
-
-#ifndef NDEBUG
-      std::cerr << "MANGOHUD: Default font tex size: " << width << "x" << height << "px (" << (width*height*1) << " bytes)" << "\n";
-#endif
-
+      SPDLOG_DEBUG("Default font tex size: {}x{}px", width, height);
    }
 }
 
@@ -992,10 +751,9 @@ static void ensure_swapchain_fonts(struct swapchain_data *data,
       return;
 
    data->font_uploaded = true;
-   ImGuiIO& io = ImGui::GetIO();
    unsigned char* pixels;
    int width, height;
-   io.Fonts->GetTexDataAsAlpha8(&pixels, &width, &height);
+   data->font_atlas->GetTexDataAsAlpha8(&pixels, &width, &height);
    size_t upload_size = width * height * 1 * sizeof(char);
    upload_image_data(device_data, command_buffer, pixels, upload_size, width, height, data->upload_font_buffer, data->upload_font_buffer_mem, data->font_image);
 }
@@ -1044,10 +802,11 @@ static struct overlay_draw *render_swapchain_display(struct swapchain_data *data
                                                      unsigned image_index)
 {
    ImDrawData* draw_data = ImGui::GetDrawData();
-   if (draw_data->TotalVtxCount == 0)
-      return NULL;
-
    struct device_data *device_data = data->device;
+
+   if (!draw_data || draw_data->TotalVtxCount == 0 || device_data->instance->params.no_display)
+      return nullptr;
+
    struct overlay_draw *draw = get_overlay_draw(data);
 
    device_data->vtable.ResetCommandBuffer(draw->command_buffer, 0);
@@ -1117,9 +876,9 @@ static struct overlay_draw *render_swapchain_display(struct swapchain_data *data
    ImDrawVert* vtx_dst = NULL;
    ImDrawIdx* idx_dst = NULL;
    VK_CHECK(device_data->vtable.MapMemory(device_data->device, draw->vertex_buffer_mem,
-                                          0, vertex_size, 0, (void**)(&vtx_dst)));
+                                          0, draw->vertex_buffer_size, 0, (void**)(&vtx_dst)));
    VK_CHECK(device_data->vtable.MapMemory(device_data->device, draw->index_buffer_mem,
-                                          0, index_size, 0, (void**)(&idx_dst)));
+                                          0, draw->index_buffer_size, 0, (void**)(&idx_dst)));
    for (int n = 0; n < draw_data->CmdListsCount; n++)
       {
          const ImDrawList* cmd_list = draw_data->CmdLists[n];
@@ -1145,7 +904,7 @@ static struct overlay_draw *render_swapchain_display(struct swapchain_data *data
 #if 1 // disable if using >1 font textures
    VkDescriptorSet desc_set[1] = {
       //data->descriptor_set
-      reinterpret_cast<VkDescriptorSet>(ImGui::GetIO().Fonts->Fonts[0]->ContainerAtlas->TexID)
+      reinterpret_cast<VkDescriptorSet>(data->font_atlas->TexID)
    };
    device_data->vtable.CmdBindDescriptorSets(draw->command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                              data->pipeline_layout, 0, 1, desc_set, 0, NULL);
@@ -1559,7 +1318,10 @@ static void setup_swapchain_data(struct swapchain_data *data,
    data->height = pCreateInfo->imageExtent.height;
    data->format = pCreateInfo->imageFormat;
 
-   data->imgui_context = ImGui::CreateContext();
+   data->imgui_context = ImGui::CreateContext(data->font_atlas);
+#ifdef __linux__
+   ImPlot::CreateContext();
+#endif
    ImGui::SetCurrentContext(data->imgui_context);
 
    ImGui::GetIO().IniFilename = NULL;
@@ -1716,6 +1478,7 @@ static void shutdown_swapchain_data(struct swapchain_data *data)
    device_data->vtable.DestroySampler(device_data->device, data->font_sampler, NULL);
    shutdown_swapchain_font(data);
 
+   IM_DELETE(data->font_atlas);
    ImGui::DestroyContext(data->imgui_context);
 }
 
@@ -1739,20 +1502,12 @@ static struct overlay_draw *before_present(struct swapchain_data *swapchain_data
    return draw;
 }
 
-void get_device_name(int32_t vendorID, int32_t deviceID, struct swapchain_stats& sw_stats)
-{
-#ifdef __gnu_linux__
-   string desc = pci_ids[vendorID].second[deviceID].desc;
-   size_t position = desc.find("[");
-   if (position != std::string::npos) {
-      desc = desc.substr(position);
-      string chars = "[]";
-      for (char c: chars)
-         desc.erase(remove(desc.begin(), desc.end(), c), desc.end());
-   }
-   gpu = sw_stats.gpuName = desc;
-   trim(sw_stats.gpuName); trim(gpu);
-#endif
+static bool IsPresentModeSupported(VkPresentModeKHR targetPresentMode, const std::vector<VkPresentModeKHR>& supportedPresentModes) {
+   for (const auto& mode : supportedPresentModes)
+      if (mode == targetPresentMode)
+         return true;
+
+    return false;  // Not found
 }
 
 static VkResult overlay_CreateSwapchainKHR(
@@ -1761,16 +1516,43 @@ static VkResult overlay_CreateSwapchainKHR(
     const VkAllocationCallbacks*                pAllocator,
     VkSwapchainKHR*                             pSwapchain)
 {
+   VkSwapchainCreateInfoKHR createInfo = *pCreateInfo;
+
+   createInfo.imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
    struct device_data *device_data = FIND(struct device_data, device);
-   array<VkPresentModeKHR, 4> modes = {VK_PRESENT_MODE_FIFO_RELAXED_KHR,
-           VK_PRESENT_MODE_IMMEDIATE_KHR,
-           VK_PRESENT_MODE_MAILBOX_KHR,
-           VK_PRESENT_MODE_FIFO_KHR};
+   auto params = device_data->instance->params;
 
-   if (device_data->instance->params.vsync < 4)
-      const_cast<VkSwapchainCreateInfoKHR*> (pCreateInfo)->presentMode = modes[device_data->instance->params.vsync];
+   if (device_data->instance->params.vsync < 4) {
+      HUDElements.cur_present_mode = HUDElements.presentModes[params.vsync];
+      createInfo.presentMode = HUDElements.cur_present_mode;
+   } else {
+      HUDElements.cur_present_mode = createInfo.presentMode;
+   }
 
-   VkResult result = device_data->vtable.CreateSwapchainKHR(device, pCreateInfo, pAllocator, pSwapchain);
+   struct instance_data *instance_data =
+      FIND(struct instance_data, device_data->physical_device);
+
+   PFN_vkGetPhysicalDeviceSurfacePresentModesKHR fpGetPhysicalDeviceSurfacePresentModesKHR =
+   (PFN_vkGetPhysicalDeviceSurfacePresentModesKHR) instance_data->vtable.GetInstanceProcAddr(instance_data->instance, "vkGetPhysicalDeviceSurfacePresentModesKHR");
+
+   if (fpGetPhysicalDeviceSurfacePresentModesKHR != NULL) {
+      uint32_t presentModeCount;
+      std::vector<VkPresentModeKHR> presentModes(6);
+      VkResult result = fpGetPhysicalDeviceSurfacePresentModesKHR(device_data->physical_device, pCreateInfo->surface, &presentModeCount, presentModes.data());
+
+      if (result == VK_SUCCESS) {
+         if (IsPresentModeSupported(HUDElements.cur_present_mode, presentModes))
+            SPDLOG_DEBUG("Present mode: {}", HUDElements.presentModeMap[HUDElements.cur_present_mode]);
+         else {
+            SPDLOG_DEBUG("Present mode is not supported: {}", HUDElements.presentModeMap[HUDElements.cur_present_mode]);
+            HUDElements.cur_present_mode = VK_PRESENT_MODE_FIFO_KHR;
+            createInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+         }
+      }
+   }
+
+   VkResult result = device_data->vtable.CreateSwapchainKHR(device, &createInfo, pAllocator, pSwapchain);
    if (result != VK_SUCCESS) return result;
    struct swapchain_data *swapchain_data = new_swapchain_data(*pSwapchain, device_data);
    setup_swapchain_data(swapchain_data, pCreateInfo);
@@ -1781,7 +1563,9 @@ static VkResult overlay_CreateSwapchainKHR(
    swapchain_data->sw_stats.version_vk.patch = VK_VERSION_PATCH(prop.apiVersion);
    swapchain_data->sw_stats.engineName    = device_data->instance->engineName;
    swapchain_data->sw_stats.engineVersion = device_data->instance->engineVersion;
+   swapchain_data->sw_stats.engine        = device_data->instance->engine;
 
+   HUDElements.vendorID = prop.vendorID;
    std::stringstream ss;
 //   ss << prop.deviceName;
    if (prop.vendorID == 0x10de) {
@@ -1797,45 +1581,18 @@ static VkResult overlay_CreateSwapchainKHR(
 #endif
    else {
       ss << " " << VK_VERSION_MAJOR(prop.driverVersion);
-      if (VK_VERSION_PATCH(prop.driverVersion) >= 99){
-         ss << "." << VK_VERSION_MINOR(prop.driverVersion) + 1;
-         ss << "." << "0";
-      }  else {
-         ss << "."  << VK_VERSION_MINOR(prop.driverVersion);
-         ss << "."  << VK_VERSION_PATCH(prop.driverVersion) + 1;
-      }
-
+      ss << "." << VK_VERSION_MINOR(prop.driverVersion);
+      ss << "." << VK_VERSION_PATCH(prop.driverVersion);
    }
    std::string driverVersion = ss.str();
 
    std::string deviceName = prop.deviceName;
    if (!is_blacklisted()) {
-#ifdef __gnu_linux__
-      parse_pciids();
-      get_device_name(prop.vendorID, prop.deviceID, swapchain_data->sw_stats);
-      init_system_info();
+#ifdef __linux__
+      swapchain_data->sw_stats.gpuName = remove_parentheses(deviceName);
 #endif
-      init_gpu_stats(device_data->properties.vendorID, device_data->instance->params);
    }
-   if(driverProps.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY){
-      swapchain_data->sw_stats.driverName = "NVIDIA";
-   }
-   if(driverProps.driverID == VK_DRIVER_ID_AMD_PROPRIETARY)
-      swapchain_data->sw_stats.driverName = "AMDGPU-PRO";
-   if(driverProps.driverID == VK_DRIVER_ID_AMD_OPEN_SOURCE)
-      swapchain_data->sw_stats.driverName = "AMDVLK";
-   if(driverProps.driverID == VK_DRIVER_ID_MESA_RADV){
-      if(deviceName.find("ACO") != std::string::npos){
-         swapchain_data->sw_stats.driverName = "RADV/ACO";
-      } else {
-         swapchain_data->sw_stats.driverName = "RADV";
-      }
-   }
-
-   if (!swapchain_data->sw_stats.driverName.empty())
-      swapchain_data->sw_stats.driverName += driverVersion;
-   else
-      swapchain_data->sw_stats.driverName = prop.deviceName + driverVersion;
+   swapchain_data->sw_stats.driverName = driverProps.driverInfo;
 
    return result;
 }
@@ -1859,21 +1616,17 @@ static void overlay_DestroySwapchainKHR(
    destroy_swapchain_data(swapchain_data);
 }
 
-void FpsLimiter(struct fps_limit& stats){
-   stats.sleepTime = stats.targetFrameTime - (stats.frameStart - stats.frameEnd);
-   if (stats.sleepTime > stats.frameOverhead) {
-      auto adjustedSleep = stats.sleepTime - stats.frameOverhead;
-      this_thread::sleep_for(adjustedSleep);
-      stats.frameOverhead = ((Clock::now() - stats.frameStart) - adjustedSleep);
-      if (stats.frameOverhead > stats.targetFrameTime / 2)
-         stats.frameOverhead = Clock::duration(0);
-   }
-}
-
 static VkResult overlay_QueuePresentKHR(
     VkQueue                                     queue,
     const VkPresentInfoKHR*                     pPresentInfo)
 {
+   using namespace std::chrono_literals;
+   if (fps_limit_stats.targetFrameTime > 0s && fps_limit_stats.method == FPS_LIMIT_METHOD_EARLY){
+      fps_limit_stats.frameStart = Clock::now();
+      FpsLimiter(fps_limit_stats);
+      fps_limit_stats.frameEnd = Clock::now();
+   }
+
    struct queue_data *queue_data = FIND(struct queue_data, queue);
 
    /* Otherwise we need to add our overlay drawing semaphore to the list of
@@ -1896,7 +1649,7 @@ static VkResult overlay_QueuePresentKHR(
       struct overlay_draw *draw = before_present(swapchain_data,
                                                    queue_data,
                                                    pPresentInfo->pWaitSemaphores,
-                                                   pPresentInfo->waitSemaphoreCount,
+                                                   i == 0 ? pPresentInfo->waitSemaphoreCount : 0,
                                                    image_index);
 
       /* Because the submission of the overlay draw waits on the semaphores
@@ -1916,9 +1669,7 @@ static VkResult overlay_QueuePresentKHR(
          result = chain_result;
    }
 
-   using namespace std::chrono_literals;
-
-   if (fps_limit_stats.targetFrameTime > 0s){
+   if (fps_limit_stats.targetFrameTime > 0s && fps_limit_stats.method == FPS_LIMIT_METHOD_LATE){
       fps_limit_stats.frameStart = Clock::now();
       FpsLimiter(fps_limit_stats);
       fps_limit_stats.frameEnd = Clock::now();
@@ -2049,14 +1800,13 @@ static VkResult overlay_CreateDevice(
    // Advance the link info for the next element on the chain
    chain_info->u.pLayerInfo = chain_info->u.pLayerInfo->pNext;
 
-   VkPhysicalDeviceFeatures device_features = {};
-   VkDeviceCreateInfo device_info = *pCreateInfo;
 
-   std::vector<const char*> enabled_extensions(device_info.ppEnabledExtensionNames,
-                                               device_info.ppEnabledExtensionNames +
-                                               device_info.enabledExtensionCount);
+   std::vector<const char*> enabled_extensions(pCreateInfo->ppEnabledExtensionNames,
+                                               pCreateInfo->ppEnabledExtensionNames +
+                                               pCreateInfo->enabledExtensionCount);
 
    uint32_t extension_count;
+
    instance_data->vtable.EnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extension_count, nullptr);
 
    std::vector<VkExtensionProperties> available_extensions(extension_count);
@@ -2082,15 +1832,7 @@ static VkResult overlay_CreateDevice(
       FOUND:;
    }
 
-   device_info.enabledExtensionCount = enabled_extensions.size();
-   device_info.ppEnabledExtensionNames = enabled_extensions.data();
-
-   if (pCreateInfo->pEnabledFeatures)
-      device_features = *(pCreateInfo->pEnabledFeatures);
-   device_info.pEnabledFeatures = &device_features;
-
-
-   VkResult result = fpCreateDevice(physicalDevice, &device_info, pAllocator, pDevice);
+   VkResult result = fpCreateDevice(physicalDevice, pCreateInfo, pAllocator, pDevice);
    if (result != VK_SUCCESS) return result;
 
    struct device_data *device_data = new_device_data(*pDevice, instance_data);
@@ -2113,6 +1855,10 @@ static VkResult overlay_CreateDevice(
 
    if (!is_blacklisted()) {
       device_map_queues(device_data, pCreateInfo);
+#ifdef __linux__
+      gpu = device_data->properties.deviceName;
+      SPDLOG_DEBUG("gpu: {}", gpu);
+#endif
    }
 
    return result;
@@ -2137,7 +1883,8 @@ static VkResult overlay_CreateInstance(
    VkLayerInstanceCreateInfo *chain_info =
       get_instance_chain_info(pCreateInfo, VK_LAYER_LINK_INFO);
 
-   std::string engineName, engineVersion;
+   std::string engineVersion,engineName;
+   enum EngineTypes engine = EngineTypes::UNKNOWN;
    if (!is_blacklisted(true)) {
       const char* pEngineName = nullptr;
       if (pCreateInfo->pApplicationInfo)
@@ -2149,11 +1896,24 @@ static VkResult overlay_CreateInstance(
          engineVersion = to_string(VK_VERSION_MAJOR(engineVer)) + "." + to_string(VK_VERSION_MINOR(engineVer)) + "." + to_string(VK_VERSION_PATCH(engineVer));
       }
 
-      if (engineName != "DXVK" && engineName != "vkd3d" && engineName != "Feral3D" && engineName != "Damavand")
-         engineName = "VULKAN";
+      if (engineName == "DXVK")
+         engine = DXVK;
 
-      if (engineName == "vkd3d")
-         engineName = "VKD3D";
+      else if (engineName == "vkd3d")
+         engine = VKD3D;
+
+      else if(engineName == "mesa zink") {
+         engine = ZINK;
+      }
+
+      else if (engineName == "Damavand")
+         engine = DAMAVAND;
+
+      else if (engineName == "Feral3D")
+         engine = FERAL3D;
+
+      else
+         engine = VULKAN;
    }
 
    assert(chain_info->u.pLayerInfo);
@@ -2178,7 +1938,11 @@ static VkResult overlay_CreateInstance(
                              &instance_data->vtable);
    instance_data_map_physical_devices(instance_data, true);
 
-   parse_overlay_config(&instance_data->params, getenv("MANGOHUD_CONFIG"));
+   if (is_blacklisted())
+      return result;
+
+   parse_overlay_config(&instance_data->params, getenv("MANGOHUD_CONFIG"), false);
+   _params = &instance_data->params;
 
    //check for blacklist item in the config file
    for (auto& item : instance_data->params.blacklist) {
@@ -2186,7 +1950,8 @@ static VkResult overlay_CreateInstance(
    }
 
    if (!is_blacklisted()) {
-#ifdef __gnu_linux__
+#ifdef __linux__
+      init_system_info();
       instance_data->notifier.params = &instance_data->params;
       start_notifier(instance_data->notifier);
 #endif
@@ -2202,6 +1967,7 @@ static VkResult overlay_CreateInstance(
          }
       }
 
+      instance_data->engine = engine;
       instance_data->engineName = engineName;
       instance_data->engineVersion = engineVersion;
    }
@@ -2211,6 +1977,48 @@ static VkResult overlay_CreateInstance(
    return result;
 }
 
+static VkResult overlay_CreateSampler(
+	VkDevice                     device,
+	const VkSamplerCreateInfo*   pCreateInfo,
+	const VkAllocationCallbacks* pAllocator,
+	VkSampler*                   pSampler)
+{
+   struct device_data *device_data = FIND(struct device_data, device);
+   auto params = device_data->instance->params;
+	VkSamplerCreateInfo sampler = *pCreateInfo;
+
+   if (params.picmip > -17 && params.picmip < 17)
+      sampler.mipLodBias = params.picmip;
+
+   if (params.af > 0){
+      sampler.anisotropyEnable = VK_TRUE;
+      sampler.maxAnisotropy = params.af;
+   } else if (params.af == 0)
+      sampler.anisotropyEnable = VK_FALSE;
+
+   if (params.enabled[OVERLAY_PARAM_ENABLED_trilinear]){
+      sampler.magFilter = VK_FILTER_LINEAR;
+      sampler.minFilter = VK_FILTER_LINEAR;
+      sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+   }
+
+   if (params.enabled[OVERLAY_PARAM_ENABLED_bicubic]){
+      sampler.magFilter = VK_FILTER_CUBIC_IMG;
+      sampler.minFilter = VK_FILTER_CUBIC_IMG;
+      sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+   }
+
+   if (params.enabled[OVERLAY_PARAM_ENABLED_retro]){
+      sampler.magFilter = VK_FILTER_NEAREST;
+      sampler.minFilter = VK_FILTER_NEAREST;
+      sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+   }
+
+	VkResult result = device_data->vtable.CreateSampler(device, &sampler, pAllocator, pSampler);
+
+	return result;
+}
+
 static void overlay_DestroyInstance(
     VkInstance                                  instance,
     const VkAllocationCallbacks*                pAllocator)
@@ -2218,19 +2026,41 @@ static void overlay_DestroyInstance(
    struct instance_data *instance_data = FIND(struct instance_data, instance);
    instance_data_map_physical_devices(instance_data, false);
    instance_data->vtable.DestroyInstance(instance, pAllocator);
+#ifdef __linux__
    if (!is_blacklisted())
-#ifdef __gnu_linux__
       stop_notifier(instance_data->notifier);
 #endif
    destroy_instance_data(instance_data);
 }
 
+#ifdef VK_USE_PLATFORM_WAYLAND_KHR
+static VkResult overlay_CreateWaylandSurfaceKHR(
+   VkInstance                                  instance,
+   const VkWaylandSurfaceCreateInfoKHR*        pCreateInfo,
+   const VkAllocationCallbacks*                pAllocator,
+   VkSurfaceKHR*                               pSurface
+)
+{
+   struct instance_data *instance_data = FIND(struct instance_data, instance);
+   if (!wl_handle)
+      wl_handle = real_dlopen("libwayland-client.so", RTLD_LAZY);
+   wl_display_ptr = pCreateInfo->display;
+   HUDElements.display_server = HUDElements.display_servers::WAYLAND;
+   init_wayland_data();
+   return instance_data->vtable.CreateWaylandSurfaceKHR(instance, pCreateInfo, pAllocator, pSurface);
+}
+#endif
+
 extern "C" VK_LAYER_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL overlay_GetDeviceProcAddr(VkDevice dev,
                                                                              const char *funcName);
+extern "C" VK_LAYER_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL overlay_GetInstanceProcAddr(VkInstance instance,
+                                                                               const char *funcName);
+
 static const struct {
    const char *name;
    void *ptr;
 } name_to_funcptr_map[] = {
+   { "vkGetInstanceProcAddr", (void *) overlay_GetInstanceProcAddr },
    { "vkGetDeviceProcAddr", (void *) overlay_GetDeviceProcAddr },
 #define ADD_HOOK(fn) { "vk" # fn, (void *) overlay_ ## fn }
 #define ADD_ALIAS_HOOK(alias, fn) { "vk" # alias, (void *) overlay_ ## fn }
@@ -2241,9 +2071,13 @@ static const struct {
    ADD_HOOK(EndCommandBuffer),
    ADD_HOOK(CmdExecuteCommands),
 
+#ifdef VK_USE_PLATFORM_WAYLAND_KHR
+   ADD_HOOK(CreateWaylandSurfaceKHR),
+#endif
    ADD_HOOK(CreateSwapchainKHR),
    ADD_HOOK(QueuePresentKHR),
    ADD_HOOK(DestroySwapchainKHR),
+   ADD_HOOK(CreateSampler),
 
    ADD_HOOK(QueueSubmit),
 
@@ -2275,6 +2109,7 @@ static void *find_ptr(const char *name)
 extern "C" VK_LAYER_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL overlay_GetDeviceProcAddr(VkDevice dev,
                                                                              const char *funcName)
 {
+   init_spdlog();
    void *ptr = find_ptr(funcName);
    if (ptr) return reinterpret_cast<PFN_vkVoidFunction>(ptr);
 
@@ -2288,6 +2123,7 @@ extern "C" VK_LAYER_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL overlay_GetD
 extern "C" VK_LAYER_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL overlay_GetInstanceProcAddr(VkInstance instance,
                                                                                const char *funcName)
 {
+   init_spdlog();
    void *ptr = find_ptr(funcName);
    if (ptr) return reinterpret_cast<PFN_vkVoidFunction>(ptr);
 

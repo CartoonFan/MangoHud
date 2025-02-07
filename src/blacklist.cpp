@@ -1,10 +1,13 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <spdlog/spdlog.h>
 
 #include "blacklist.h"
 #include "string_utils.h"
 #include "file_utils.h"
+
+std::string global_proc_name;
 
 static std::string get_proc_name() {
    // Note: It is possible to use GNU program_invocation_short_name.
@@ -12,20 +15,23 @@ static std::string get_proc_name() {
    if (!proc_name.empty()) {
        return proc_name;
    }
-   const std::string p = get_exe_path();
-   return p.substr(p.find_last_of("/\\") + 1);
+   return get_basename(get_exe_path());
 }
 
 static  std::vector<std::string> blacklist {
+    "Amazon Games UI.exe",
     "Battle.net.exe",
     "BethesdaNetLauncher.exe",
     "EpicGamesLauncher.exe",
+    "halloy",
     "IGOProxy.exe",
     "IGOProxy64.exe",
+    "monado-service",
     "Origin.exe",
     "OriginThinSetupInternal.exe",
     "steam",
     "steamwebhelper",
+    "vrcompositor",
     "gldriverquery",
     "vulkandriverquery",
     "Steam.exe",
@@ -34,15 +40,39 @@ static  std::vector<std::string> blacklist {
     "LeagueClient.exe",
     "LeagueClientUxRender.exe",
     "SocialClubHelper.exe",
+    "EADesktop.exe",
+    "EALauncher.exe",
+    "StarCitizen_Launcher.exe",
+    "InsurgencyEAC.exe",
+    "GalaxyClient.exe",
+    "REDprelauncher.exe",
+    "REDlauncher.exe",
+    "gamescope",
+    "RSI Launcher.exe",
+    "tabtip.exe",
+    "steam.exe",
+    "explorer.exe",
+    "wine-preloader",
+    "iexplore.exe",
+    "rundll32.exe",
+    "Launcher", //Paradox Interactive Launcher
+    "steamwebhelper.exe",
+    "EpicWebHelper.exe",
+    "UplayWebCore.exe",
+    "plutonium.exe",
+    "plutonium-launcher-win32.exe"
 };
 
 
 static bool check_blacklisted() {
     std::string proc_name = get_proc_name();
+    global_proc_name = proc_name;
     bool blacklisted = std::find(blacklist.begin(), blacklist.end(), proc_name) != blacklist.end();
 
-    if(blacklisted) {
-        fprintf(stderr, "INFO: process %s is blacklisted in MangoHud\n", proc_name.c_str());
+    static bool printed = false;
+    if(blacklisted && !printed) {
+        printed = true;
+        SPDLOG_INFO("process '{}' is blacklisted in MangoHud", proc_name);
     }
 
     return blacklisted;

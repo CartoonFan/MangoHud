@@ -42,13 +42,10 @@ dependencies() {
         set -e
 
         if [[ ! -f ./bin/get-pip.py ]]; then
-            curl https://bootstrap.pypa.io/get-pip.py -o bin/get-pip.py
+            curl https://bootstrap.pypa.io/pip/3.5/get-pip.py -o bin/get-pip.py
+            python3 ./bin/get-pip.py
         fi
-        python3 ./bin/get-pip.py
-
-        if [[ $(pip3 show meson >/dev/null; echo $?) == 1 || $(pip3 show mako >/dev/null; echo $?) == 1 ]]; then
-            pip3 install meson mako
-        fi
+        pip3 install 'meson>=0.54' mako
 
         if [[ ! -f /usr/include/NVCtrl/NVCtrl.h ]]; then
             curl -LO http://mirrors.kernel.org/ubuntu/pool/main/n/nvidia-settings/libxnvctrl0_440.64-0ubuntu1_amd64.deb
@@ -72,19 +69,19 @@ configure() {
     if [[ ! -f "build-srt/meson64/build.ninja" ]]; then
         export CC="${LOCAL_CC}"
         export CXX="${LOCAL_CXX}"
-        meson build-srt/meson64 --libdir lib/mangohud/lib --prefix /usr -Dappend_libdir_mangohud=false -Dld_libdir_prefix=true $@ ${CONFIGURE_OPTS}
+        meson build-srt/meson64 --libdir lib/mangohud/lib --prefix /usr -Dappend_libdir_mangohud=false $@ ${CONFIGURE_OPTS}
     fi
     if [[ ! -f "build-srt/meson32/build.ninja" ]]; then
         export CC="${LOCAL_CC} -m32"
         export CXX="${LOCAL_CXX} -m32"
         export PKG_CONFIG_PATH="/usr/lib32/pkgconfig:/usr/lib/i386-linux-gnu/pkgconfig:/usr/lib/pkgconfig:${PKG_CONFIG_PATH_32}"
-        meson build-srt/meson32 --libdir lib/mangohud/lib32 --prefix /usr -Dappend_libdir_mangohud=false -Dld_libdir_prefix=true $@ ${CONFIGURE_OPTS}
+        meson build-srt/meson32 --libdir lib/mangohud/lib32 --prefix /usr -Dappend_libdir_mangohud=false $@ ${CONFIGURE_OPTS}
     fi
 }
 
 build() {
     if [[ ! -f "build-srt/meson64/build.ninja" || ! -f "build-srt/meson32/build.ninja" ]]; then
-        configure
+        configure $@
     fi
     DESTDIR="$PWD/build-srt/release" ninja -C build-srt/meson32 install
     DESTDIR="$PWD/build-srt/release" ninja -C build-srt/meson64 install

@@ -1,9 +1,11 @@
-#include "shared_x11.h"
-#include "loaders/loader_x11.h"
 #include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <functional>
+#include <spdlog/spdlog.h>
+#include "shared_x11.h"
+#include "loaders/loader_x11.h"
+#include "hud_elements.h"
 
 static std::unique_ptr<Display, std::function<void(Display*)>> display;
 
@@ -15,26 +17,39 @@ bool init_x11() {
     if (display)
         return true;
 
-    if (!g_x11->IsLoaded()) {
-        std::cerr << "MANGOHUD: X11 loader failed to load\n";
+    auto libx11 = get_libx11();
+
+    if (!libx11->IsLoaded()) {
+        SPDLOG_ERROR("X11 loader failed to load");
         failed = true;
         return false;
     }
 
     const char *displayid = getenv("DISPLAY");
     if (displayid) {
-        auto local_x11 = g_x11;
-        display = { g_x11->XOpenDisplay(displayid),
-            [local_x11](Display* dpy) {
+        display = { libx11->XOpenDisplay(displayid),
+            [libx11](Display* dpy) {
                 if (dpy)
-                    local_x11->XCloseDisplay(dpy);
+                    libx11->XCloseDisplay(dpy);
             }
         };
     }
 
     failed = !display;
-    if (failed)
-        std::cerr << "MANGOHUD: XOpenDisplay failed to open display '" << displayid << "'\n";
+    if (failed && displayid)
+        SPDLOG_ERROR("XOpenDisplay failed to open display '{}'", displayid);
+    
+    if (!displayid)
+        SPDLOG_DEBUG("DISPLAY env is not set");
+
+    if (display && HUDElements.display_server == HUDElements.display_servers::UNKNOWN) {
+        int opcode, event, error;
+        if (libx11->XQueryExtension(display.get(), "XWAYLAND", &opcode, &event, &error))
+		    HUDElements.display_server = HUDElements.display_servers::XWAYLAND;
+        else
+            HUDElements.display_server = HUDElements.display_servers::XORG;
+
+	}
 
     return !!display;
 }

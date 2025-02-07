@@ -5,6 +5,9 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <cstdint>
+#include <condition_variable>
+#include <mutex>
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,20 +31,25 @@ typedef unsigned long KeySym;
    OVERLAY_PARAM_BOOL(fps)                           \
    OVERLAY_PARAM_BOOL(frame_timing)                  \
    OVERLAY_PARAM_BOOL(core_load)                     \
+   OVERLAY_PARAM_BOOL(core_bars)                     \
    OVERLAY_PARAM_BOOL(cpu_temp)                      \
    OVERLAY_PARAM_BOOL(cpu_power)                     \
    OVERLAY_PARAM_BOOL(gpu_temp)                      \
+   OVERLAY_PARAM_BOOL(gpu_junction_temp)             \
+   OVERLAY_PARAM_BOOL(gpu_mem_temp)                  \
    OVERLAY_PARAM_BOOL(cpu_stats)                     \
    OVERLAY_PARAM_BOOL(gpu_stats)                     \
    OVERLAY_PARAM_BOOL(ram)                           \
    OVERLAY_PARAM_BOOL(swap)                          \
    OVERLAY_PARAM_BOOL(vram)                          \
+   OVERLAY_PARAM_BOOL(procmem)                       \
+   OVERLAY_PARAM_BOOL(procmem_shared)                \
+   OVERLAY_PARAM_BOOL(procmem_virt)                  \
    OVERLAY_PARAM_BOOL(time)                          \
    OVERLAY_PARAM_BOOL(full)                          \
    OVERLAY_PARAM_BOOL(read_cfg)                      \
    OVERLAY_PARAM_BOOL(io_read)                       \
    OVERLAY_PARAM_BOOL(io_write)                      \
-   OVERLAY_PARAM_BOOL(io_stats)                      \
    OVERLAY_PARAM_BOOL(gpu_mem_clock)                 \
    OVERLAY_PARAM_BOOL(gpu_core_clock)                \
    OVERLAY_PARAM_BOOL(gpu_power)                     \
@@ -60,6 +68,7 @@ typedef unsigned long KeySym;
    OVERLAY_PARAM_BOOL(legacy_layout)                 \
    OVERLAY_PARAM_BOOL(cpu_mhz)                       \
    OVERLAY_PARAM_BOOL(frametime)                     \
+   OVERLAY_PARAM_BOOL(frame_count)                   \
    OVERLAY_PARAM_BOOL(resolution)                    \
    OVERLAY_PARAM_BOOL(show_fps_limit)                \
    OVERLAY_PARAM_BOOL(fps_color_change)              \
@@ -68,6 +77,44 @@ typedef unsigned long KeySym;
    OVERLAY_PARAM_BOOL(exec)                          \
    OVERLAY_PARAM_BOOL(vkbasalt)                      \
    OVERLAY_PARAM_BOOL(gamemode)                      \
+   OVERLAY_PARAM_BOOL(battery)                       \
+   OVERLAY_PARAM_BOOL(battery_icon)                  \
+   OVERLAY_PARAM_BOOL(fps_only)                      \
+   OVERLAY_PARAM_BOOL(fsr)                           \
+   OVERLAY_PARAM_BOOL(mangoapp_steam)                \
+   OVERLAY_PARAM_BOOL(debug)                         \
+   OVERLAY_PARAM_BOOL(device_battery_icon)           \
+   OVERLAY_PARAM_BOOL(hide_fsr_sharpness)            \
+   OVERLAY_PARAM_BOOL(fan)                           \
+   OVERLAY_PARAM_BOOL(throttling_status)             \
+   OVERLAY_PARAM_BOOL(throttling_status_graph)       \
+   OVERLAY_PARAM_BOOL(fcat)                          \
+   OVERLAY_PARAM_BOOL(log_versioning)                \
+   OVERLAY_PARAM_BOOL(horizontal)                    \
+   OVERLAY_PARAM_BOOL(horizontal_stretch)            \
+   OVERLAY_PARAM_BOOL(hud_no_margin)                 \
+   OVERLAY_PARAM_BOOL(hud_compact)                   \
+   OVERLAY_PARAM_BOOL(battery_watt)                  \
+   OVERLAY_PARAM_BOOL(battery_time)                  \
+   OVERLAY_PARAM_BOOL(exec_name)                     \
+   OVERLAY_PARAM_BOOL(trilinear)                     \
+   OVERLAY_PARAM_BOOL(bicubic)                       \
+   OVERLAY_PARAM_BOOL(retro)                         \
+   OVERLAY_PARAM_BOOL(gpu_fan)                       \
+   OVERLAY_PARAM_BOOL(gpu_voltage)                   \
+   OVERLAY_PARAM_BOOL(engine_short_names)            \
+   OVERLAY_PARAM_BOOL(text_outline)                  \
+   OVERLAY_PARAM_BOOL(temp_fahrenheit)               \
+   OVERLAY_PARAM_BOOL(dynamic_frame_timing)          \
+   OVERLAY_PARAM_BOOL(duration)                      \
+   OVERLAY_PARAM_BOOL(inherit)                       \
+   OVERLAY_PARAM_BOOL(hdr)                           \
+   OVERLAY_PARAM_BOOL(refresh_rate)                  \
+   OVERLAY_PARAM_BOOL(frame_timing_detailed)         \
+   OVERLAY_PARAM_BOOL(winesync)                      \
+   OVERLAY_PARAM_BOOL(present_mode)                  \
+   OVERLAY_PARAM_BOOL(time_no_label)                 \
+   OVERLAY_PARAM_BOOL(display_server)                \
    OVERLAY_PARAM_CUSTOM(fps_sampling_period)         \
    OVERLAY_PARAM_CUSTOM(output_folder)               \
    OVERLAY_PARAM_CUSTOM(output_file)                 \
@@ -85,11 +132,18 @@ typedef unsigned long KeySym;
    OVERLAY_PARAM_CUSTOM(no_display)                  \
    OVERLAY_PARAM_CUSTOM(control)                     \
    OVERLAY_PARAM_CUSTOM(fps_limit)                   \
+   OVERLAY_PARAM_CUSTOM(fps_limit_method)            \
    OVERLAY_PARAM_CUSTOM(vsync)                       \
    OVERLAY_PARAM_CUSTOM(gl_vsync)                    \
+   OVERLAY_PARAM_CUSTOM(gl_size_query)               \
+   OVERLAY_PARAM_CUSTOM(gl_bind_framebuffer)         \
+   OVERLAY_PARAM_CUSTOM(gl_dont_flip)                \
    OVERLAY_PARAM_CUSTOM(toggle_hud)                  \
+   OVERLAY_PARAM_CUSTOM(toggle_hud_position)         \
+   OVERLAY_PARAM_CUSTOM(toggle_preset)               \
    OVERLAY_PARAM_CUSTOM(toggle_fps_limit)            \
    OVERLAY_PARAM_CUSTOM(toggle_logging)              \
+   OVERLAY_PARAM_CUSTOM(reset_fps_metrics)           \
    OVERLAY_PARAM_CUSTOM(reload_cfg)                  \
    OVERLAY_PARAM_CUSTOM(upload_log)                  \
    OVERLAY_PARAM_CUSTOM(upload_logs)                 \
@@ -109,12 +163,14 @@ typedef unsigned long KeySym;
    OVERLAY_PARAM_CUSTOM(io_color)                    \
    OVERLAY_PARAM_CUSTOM(text_color)                  \
    OVERLAY_PARAM_CUSTOM(wine_color)                  \
+   OVERLAY_PARAM_CUSTOM(battery_color)               \
+   OVERLAY_PARAM_CUSTOM(network_color)               \
    OVERLAY_PARAM_CUSTOM(alpha)                       \
    OVERLAY_PARAM_CUSTOM(log_duration)                \
    OVERLAY_PARAM_CUSTOM(pci_dev)                     \
    OVERLAY_PARAM_CUSTOM(media_player_name)           \
    OVERLAY_PARAM_CUSTOM(media_player_color)          \
-   OVERLAY_PARAM_CUSTOM(media_player_order)          \
+   OVERLAY_PARAM_CUSTOM(media_player_format)         \
    OVERLAY_PARAM_CUSTOM(cpu_text)                    \
    OVERLAY_PARAM_CUSTOM(gpu_text)                    \
    OVERLAY_PARAM_CUSTOM(log_interval)                \
@@ -131,25 +187,36 @@ typedef unsigned long KeySym;
    OVERLAY_PARAM_CUSTOM(table_columns)               \
    OVERLAY_PARAM_CUSTOM(blacklist)                   \
    OVERLAY_PARAM_CUSTOM(autostart_log)               \
-
+   OVERLAY_PARAM_CUSTOM(round_corners)               \
+   OVERLAY_PARAM_CUSTOM(fsr_steam_sharpness)         \
+   OVERLAY_PARAM_CUSTOM(fcat_screen_edge)            \
+   OVERLAY_PARAM_CUSTOM(fcat_overlay_width)          \
+   OVERLAY_PARAM_CUSTOM(picmip)                      \
+   OVERLAY_PARAM_CUSTOM(af)                          \
+   OVERLAY_PARAM_CUSTOM(text_outline_color)          \
+   OVERLAY_PARAM_CUSTOM(text_outline_thickness)      \
+   OVERLAY_PARAM_CUSTOM(fps_text)                    \
+   OVERLAY_PARAM_CUSTOM(device_battery)              \
+   OVERLAY_PARAM_CUSTOM(fps_metrics)                 \
+   OVERLAY_PARAM_CUSTOM(network)                     \
+   OVERLAY_PARAM_CUSTOM(gpu_list)                    \
 
 enum overlay_param_position {
    LAYER_POSITION_TOP_LEFT,
-   LAYER_POSITION_TOP_RIGHT,
-   LAYER_POSITION_BOTTOM_LEFT,
-   LAYER_POSITION_BOTTOM_RIGHT,
    LAYER_POSITION_TOP_CENTER,
+   LAYER_POSITION_TOP_RIGHT,
+   LAYER_POSITION_MIDDLE_LEFT,
+   LAYER_POSITION_MIDDLE_RIGHT,
+   LAYER_POSITION_BOTTOM_LEFT,
+   LAYER_POSITION_BOTTOM_CENTER,
+   LAYER_POSITION_BOTTOM_RIGHT,
+   // Count must always be the last entry
+   LAYER_POSITION_COUNT,
 };
 
 enum overlay_plots {
     OVERLAY_PLOTS_frame_timing,
     OVERLAY_PLOTS_MAX,
-};
-
-enum media_player_order {
-   MP_ORDER_TITLE,
-   MP_ORDER_ARTIST,
-   MP_ORDER_ALBUM,
 };
 
 enum font_glyph_ranges {
@@ -162,6 +229,17 @@ enum font_glyph_ranges {
    FG_VIETNAMESE              = (1u << 6),
    FG_LATIN_EXT_A             = (1u << 7),
    FG_LATIN_EXT_B             = (1u << 8),
+};
+
+enum gl_size_query {
+   GL_SIZE_DRAWABLE,
+   GL_SIZE_VIEWPORT,
+   GL_SIZE_SCISSORBOX, // needed?
+};
+
+enum fps_limit_method {
+   FPS_LIMIT_METHOD_EARLY,
+   FPS_LIMIT_METHOD_LATE
 };
 
 enum overlay_param_enabled {
@@ -177,8 +255,9 @@ struct overlay_params {
    bool enabled[OVERLAY_PARAM_ENABLED_MAX];
    enum overlay_param_position position;
    int control;
-   uint32_t fps_sampling_period; /* us */
+   uint32_t fps_sampling_period; /* ns */
    std::vector<std::uint32_t> fps_limit;
+   enum fps_limit_method fps_limit_method;
    bool help;
    bool no_display;
    bool full;
@@ -186,10 +265,16 @@ struct overlay_params {
    unsigned width;
    unsigned height;
    int offset_x, offset_y;
+   float round_corners;
    unsigned vsync;
    int gl_vsync;
-   uint64_t log_duration;
-   unsigned cpu_color, gpu_color, vram_color, ram_color, engine_color, io_color, frametime_color, background_color, text_color, wine_color;
+   int gl_bind_framebuffer {-1};
+   enum gl_size_query gl_size_query {GL_SIZE_DRAWABLE};
+   bool gl_dont_flip {false};
+   int64_t log_duration, log_interval;
+   unsigned cpu_color, gpu_color, vram_color, ram_color,
+            engine_color, io_color, frametime_color, background_color,
+            text_color, wine_color, battery_color, network_color;
    std::vector<unsigned> gpu_load_color;
    std::vector<unsigned> cpu_load_color;
    std::vector<unsigned> gpu_load_value;
@@ -205,19 +290,23 @@ struct overlay_params {
    float background_alpha, alpha;
    float cellpadding_y;
    std::vector<KeySym> toggle_hud;
+   std::vector<KeySym> toggle_preset;
    std::vector<KeySym> toggle_fps_limit;
    std::vector<KeySym> toggle_logging;
    std::vector<KeySym> reload_cfg;
    std::vector<KeySym> upload_log;
    std::vector<KeySym> upload_logs;
+   std::vector<KeySym> toggle_hud_position;
+   std::vector<KeySym> reset_fps_metrics;
    std::string time_format, output_folder, output_file;
    std::string pci_dev;
    std::string media_player_name;
-   std::string cpu_text, gpu_text;
+   std::string cpu_text, fps_text;
    std::vector<std::string> blacklist;
-   unsigned log_interval, autostart_log;
-   std::vector<media_player_order> media_player_order;
+   unsigned autostart_log;
+   std::vector<std::string> media_player_format;
    std::vector<std::string> benchmark_percentiles;
+   std::vector<std::string> gpu_text;
    std::string font_file, font_file_text;
    uint32_t font_glyph_ranges;
    std::string custom_text_center;
@@ -225,19 +314,33 @@ struct overlay_params {
    std::string config_file_path;
    std::unordered_map<std::string,std::string> options;
    int permit_upload;
-
+   int fsr_steam_sharpness;
+   unsigned short fcat_screen_edge;
+   unsigned short fcat_overlay_width;
+   int picmip;
+   int af;
+   std::vector<int> preset;
    size_t font_params_hash;
+   unsigned text_outline_color;
+   float text_outline_thickness;
+   std::vector<std::string> device_battery;
+   std::vector<std::string> fps_metrics;
+   std::vector<std::string> network;
+   std::vector<unsigned> gpu_list;
 };
 
 const extern char *overlay_param_names[];
 
-void parse_overlay_env(struct overlay_params *params,
-                       const char *env);
 void parse_overlay_config(struct overlay_params *params,
-                       const char *env);
-
+                       const char *env, bool ignore_preset);
+void presets(int preset, struct overlay_params *params, bool inherit=false);
+bool parse_preset_config(int preset, struct overlay_params *params);
+void add_to_options(struct overlay_params *params, std::string option, std::string value);
 #ifdef __cplusplus
 }
 #endif
+extern std::mutex config_mtx;
+extern std::condition_variable config_cv;
+extern bool config_ready;
 
 #endif /* MANGOHUD_OVERLAY_PARAMS_H */

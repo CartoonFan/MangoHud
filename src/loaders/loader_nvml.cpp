@@ -4,6 +4,7 @@
 #include "loader_nvml.h"
 #include <iostream>
 #include <memory>
+#include <spdlog/spdlog.h>
 
 // Put these sanity checks here so that they fire at most once
 // (to avoid cluttering the build output).
@@ -38,7 +39,7 @@ bool libnvml_loader::Load(const std::string& library_name) {
 #if defined(LIBRARY_LOADER_NVML_H_DLOPEN)
   library_ = dlopen(library_name.c_str(), RTLD_LAZY);
   if (!library_) {
-    std::cerr << "MANGOHUD: Failed to open " << "" MANGOHUD_ARCH << " " << library_name << ": " << dlerror() << std::endl;
+    SPDLOG_ERROR("Failed to open " MANGOHUD_ARCH " {}: {}", library_name, dlerror());
     return false;
   }
 #endif
@@ -188,6 +189,19 @@ bool libnvml_loader::Load(const std::string& library_name) {
   }
 
 #if defined(LIBRARY_LOADER_NVML_H_DLOPEN)
+  nvmlDeviceGetCurrentClocksThrottleReasons =
+      reinterpret_cast<decltype(this->nvmlDeviceGetCurrentClocksThrottleReasons)>(
+          dlsym(library_, "nvmlDeviceGetCurrentClocksThrottleReasons"));
+#endif
+#if defined(LIBRARY_LOADER_NVML_H_DT_NEEDED)
+  nvmlDeviceGetCurrentClocksThrottleReasons = &::nvmlDeviceGetCurrentClocksThrottleReasons;
+#endif
+  if (!nvmlErrorString) {
+    CleanUp(true);
+    return false;
+  }
+
+#if defined(LIBRARY_LOADER_NVML_H_DLOPEN)
   nvmlDeviceGetPowerUsage =
       reinterpret_cast<decltype(this->nvmlDeviceGetPowerUsage)>(
           dlsym(library_, "nvmlDeviceGetPowerUsage"));
@@ -200,9 +214,62 @@ bool libnvml_loader::Load(const std::string& library_name) {
     return false;
   }
 
+#if defined(LIBRARY_LOADER_NVML_H_DLOPEN)
+  nvmlUnitGetFanSpeedInfo =
+      reinterpret_cast<decltype(this->nvmlUnitGetFanSpeedInfo)>(
+          dlsym(library_, "nvmlUnitGetFanSpeedInfo"));
+#endif
+#if defined(LIBRARY_LOADER_NVML_H_DT_NEEDED)
+  nvmlUnitGetFanSpeedInfo = &::nvmlUnitGetFanSpeedInfo;
+#endif
+  if (!nvmlUnitGetFanSpeedInfo) {
+    CleanUp(true);
+    return false;
+  }
+
+#if defined(LIBRARY_LOADER_NVML_H_DLOPEN)
+  nvmlUnitGetHandleByIndex =
+      reinterpret_cast<decltype(this->nvmlUnitGetHandleByIndex)>(
+          dlsym(library_, "nvmlUnitGetHandleByIndex"));
+#endif
+#if defined(LIBRARY_LOADER_NVML_H_DT_NEEDED)
+  nvmlUnitGetHandleByIndex = &::nvmlUnitGetHandleByIndex;
+#endif
+  if (!nvmlUnitGetHandleByIndex) {
+    CleanUp(true);
+    return false;
+  }
+
+#if defined(LIBRARY_LOADER_NVML_H_DLOPEN)
+  nvmlDeviceGetFanSpeed =
+      reinterpret_cast<decltype(this->nvmlDeviceGetFanSpeed)>(
+          dlsym(library_, "nvmlDeviceGetFanSpeed"));
+#endif
+#if defined(LIBRARY_LOADER_NVML_H_DT_NEEDED)
+  nvmlDeviceGetFanSpeed = &::nvmlDeviceGetFanSpeed;
+#endif
+  if (!nvmlDeviceGetFanSpeed) {
+    CleanUp(true);
+    return false;
+  }
+
+#if defined(LIBRARY_LOADER_NVML_H_DLOPEN)
+  nvmlDeviceGetGraphicsRunningProcesses =
+      reinterpret_cast<decltype(this->nvmlDeviceGetGraphicsRunningProcesses)>(
+          dlsym(library_, "nvmlDeviceGetGraphicsRunningProcesses"));
+#endif
+#if defined(LIBRARY_LOADER_NVML_H_DT_NEEDED)
+  nvmlDeviceGetGraphicsRunningProcesses = &::nvmlDeviceGetGraphicsRunningProcesses;
+#endif
+  if (!nvmlDeviceGetGraphicsRunningProcesses) {
+    CleanUp(true);
+    return false;
+  }
+
   loaded_ = true;
   return true;
 }
+
 
 void libnvml_loader::CleanUp(bool unload) {
 #if defined(LIBRARY_LOADER_NVML_H_DLOPEN)
@@ -220,5 +287,9 @@ void libnvml_loader::CleanUp(bool unload) {
   nvmlDeviceGetCount_v2 = NULL;
   nvmlDeviceGetHandleByIndex_v2 = NULL;
   nvmlDeviceGetHandleByPciBusId_v2 = NULL;
-
+  nvmlDeviceGetCurrentClocksThrottleReasons = NULL;
+  nvmlUnitGetFanSpeedInfo = NULL;
+  nvmlUnitGetHandleByIndex = NULL;
+  nvmlDeviceGetFanSpeed = NULL;
+  nvmlDeviceGetGraphicsRunningProcesses = NULL;
 }
